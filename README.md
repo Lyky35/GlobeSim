@@ -3,7 +3,8 @@
 A real-time 3D simulation of planet Earth: a topographic globe rotating at the
 true sidereal rate, with the Moon orbiting at its true sidereal period and a
 translucent ocean whose water is raised into the classic **tidal bulge** by the
-Moon's gravity.
+Moon's gravity — wrapped in a live-simulated cloud deck and a scattering
+atmosphere.
 
 The main implementation is **Rust** ([macroquad](https://github.com/not-fl3/macroquad),
 OpenGL, no heavy engine) — a native desktop app where the tide surface can be
@@ -27,7 +28,8 @@ Useful flags (mainly for benchmarking/screenshots):
 ```sh
 cargo run --release -- --cpu          # start in CPU tide mode
 cargo run --release -- --tide=600     # start with a 600 km bulge
-cargo test                            # unit tests for the tide math & CPU mesh pass
+cargo run --release -- --clouds=off   # start with the cloud deck off
+cargo test                            # unit tests: tide math, CPU mesh, cloud dynamics
 ```
 
 ### Controls
@@ -39,6 +41,8 @@ cargo test                            # unit tests for the tide math & CPU mesh 
 | `c` / `g` | tide computed on CPU / on GPU |
 | `[` `]` | tide height −/+ 25 km (0–1000 km) |
 | `-` `=` | sim speed ÷2 / ×2 (×0.01 … ×1 000 000) |
+| `k` | clouds: live CPU sim → GPU drift → off |
+| `o` | atmosphere (scattering glow shell) on/off |
 | `m` | toggle Moon |
 | `f` | toggle dashed gravity vector (Earth ← Moon) |
 | `a` | toggle rotation axis + equator |
@@ -63,6 +67,18 @@ cargo test                            # unit tests for the tide math & CPU mesh 
     uniforms per frame.
   - *CPU*: all 10 400 ocean vertices are re-positioned *and* re-normalled in
     Rust every frame (~0.3 ms/frame measured; the HUD shows the number).
+- **Atmosphere** —
+  - *Cloud deck*: a 256×128 lat/lon cloud-fraction field (**CPU**, ~1 ms/frame)
+    advected semi-Lagrangian by a three-band surface wind (trade easterlies at
+    ±15°, mid-latitude westerlies at ±47°, and a Hadley/Ferrel meridional cell).
+    Clouds grow where insolation is high (moisture biased to the tropics) and
+    decay elsewhere; the subsolar point sweeping west once per sidereal day
+    winds the growth into helical bands. The HUD reports the measured pass time
+    and the mean cloud cover.
+  - *GPU mode* (`k`): a frozen cloud texture scrolled by one uniform — the same
+    "cheap vs. simulated" switch as the tide.
+  - *Scattering glow*: an additive rayleigh-ish shell, brightest at the limb and
+    on the dayside, with extra forward-scatter toward the Sun.
 - **Extras** — Milky Way sky sphere, MSAA, HUD with fps / sim time / measured
   tide-pass time / real-time high-tide interval.
 
@@ -78,6 +94,16 @@ much. The Moon's gravity here is kinematic (the equilibrium-tide formula), not
 an N-body integration; real ocean tides additionally involve basin resonance,
 Coriolis and friction, which produce *co-tidal* patterns rather than one smooth
 bulge. Roadmap items below include a full shallow-water solver.
+
+The cloud deck runs a miniature general circulation: a surface wind field
+(trade easterlies at ±15°, westerlies at ±47°, a Hadley/Ferrel meridional cell)
+advects cloud water semi-Lagrangian, while insolation-driven convection grows
+it on the dayside and slow decay burns it off elsewhere. Because the subsolar
+point sweeps west once per sidereal day in the ground frame, growth organises
+itself into the helical cloud bands you see from orbit. The backtrace transport
+implements `-v·∇c` but not the `-c∇·v` compression term (the wind field is not
+divergence-free), so a global mass fixer restores the conserved total each
+step — the same trick real GCMs use.
 
 ## Web prototype (`web/`)
 

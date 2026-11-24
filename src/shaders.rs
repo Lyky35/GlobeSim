@@ -94,6 +94,95 @@ void main() {
 }
 "#;
 
+// Cloud shell: textured lambert layer just above the surface. `u_drift`
+// offsets longitude (GPU mode fakes the circulation by scrolling a frozen
+// texture; CPU mode leaves it 0 and updates the texture itself).
+pub const CLOUD_VS: &str = r#"#version 100
+attribute vec3 position;
+attribute vec2 texcoord;
+attribute vec4 color0;
+attribute vec4 normal;
+
+uniform mat4 Projection;
+uniform mat4 u_model;
+uniform float u_drift;
+
+varying vec2 v_uv;
+varying vec3 v_normal;
+
+void main() {
+    v_uv = texcoord + vec2(u_drift, 0.0);
+    v_normal = normalize((u_model * vec4(normal.xyz, 0.0)).xyz);
+    gl_Position = Projection * u_model * vec4(position, 1.0);
+}
+"#;
+
+pub const CLOUD_FS: &str = r#"#version 100
+precision mediump float;
+
+varying vec2 v_uv;
+varying vec3 v_normal;
+
+uniform sampler2D Texture;
+uniform vec3 u_light_dir;
+
+void main() {
+    vec4 t = texture2D(Texture, vec2(fract(v_uv.x), v_uv.y));
+    float lambert = max(dot(normalize(v_normal), u_light_dir), 0.0);
+    vec3 c = vec3(0.97, 0.98, 1.0) * (0.28 + 0.95 * lambert);
+    // Thin cloud = faint veil, dense cloud = near-solid deck — real overcast
+    // is patchy, so boost contrast between the two. Nightside clouds are dark
+    // *and* translucent so the surface below still reads through the deck.
+    float dens = t.a;
+    float opaque = smoothstep(0.35, 0.75, dens);
+    float a = (0.30 * dens + 0.85 * opaque) * (0.35 + 0.65 * smoothstep(0.0, 0.35, lambert));
+    gl_FragColor = vec4(c, min(a, 1.0) * 0.95);
+}
+"#;
+
+// Atmosphere shell: additive Rayleigh-ish rim glow. Brightest at the limb
+// and on the dayside, with extra forward scatter toward the Sun.
+pub const ATMO_VS: &str = r#"#version 100
+attribute vec3 position;
+attribute vec2 texcoord;
+attribute vec4 color0;
+attribute vec4 normal;
+
+uniform mat4 Projection;
+uniform vec3 u_cam_pos;
+
+varying vec3 v_normal;
+varying vec3 v_view;
+
+void main() {
+    v_normal = normalize(normal.xyz);
+    v_view = position - u_cam_pos;
+    gl_Position = Projection * vec4(position, 1.0);
+}
+"#;
+
+pub const ATMO_FS: &str = r#"#version 100
+precision mediump float;
+
+varying vec3 v_normal;
+varying vec3 v_view;
+
+uniform vec3 u_light_dir;
+
+void main() {
+    vec3 n = normalize(v_normal);
+    vec3 v = normalize(v_view);
+    // Grazing view rays traverse the most air -> glow concentrates at the limb.
+    float rim = 1.0 - abs(dot(n, v));
+    float lit = max(dot(n, u_light_dir), 0.0);
+    float forward = pow(max(dot(v, u_light_dir), 0.0), 2.0);
+    float a = pow(rim, 3.2) * (0.28 + 1.1 * lit + 0.5 * forward);
+    a = min(a, 0.9);
+    vec3 col = mix(vec3(0.23, 0.44, 0.95), vec3(0.72, 0.86, 1.0), pow(lit, 0.65));
+    gl_FragColor = vec4(col * a, a);
+}
+"#;
+
 // Unlit textured sky sphere (drawn from the inside, no depth write).
 pub const SKY_VS: &str = r#"#version 100
 attribute vec3 position;

@@ -1,9 +1,11 @@
+mod atmos;
 mod camera;
 mod constants;
 mod shaders;
 mod sphere;
 mod tide;
 
+use atmos::{CloudField, GRID_H, GRID_W};
 use camera::OrbitCam;
 use constants::*;
 use macroquad::miniquad::{
@@ -14,7 +16,18 @@ use macroquad::prelude::*;
 use sphere::SphereGrid;
 use tide::{TideMode, TideOcean};
 
-use shaders::{LAMBERT_FS, LAMBERT_VS, SKY_FS, SKY_VS, WATER_FS, WATER_VS};
+use shaders::{
+    ATMO_FS, ATMO_VS, CLOUD_FS, CLOUD_VS, LAMBERT_FS, LAMBERT_VS, SKY_FS, SKY_VS, WATER_FS,
+    WATER_VS,
+};
+
+pub enum CloudMode {
+    /// Live CPU circulation simulation (advection + convection).
+    Sim,
+    /// Frozen texture scrolled at trade-wind speed (GPU-cheap comparison).
+    Drift,
+    Off,
+}
 
 const TAU: f64 = std::f64::consts::TAU;
 
@@ -37,7 +50,12 @@ fn window_conf() -> macroquad::conf::Conf {
 }
 
 fn sun_dir() -> Vec3 {
-    vec3(0.87, 0.32, 0.38).normalize()
+    // Sun sits roughly behind the opening camera (azimuth ~-115 deg vs the
+    // camera's ~-174 deg), so the visible face is a brightly lit gibbous:
+    // topography and the cloud deck read well, and the tide-raising Moon
+    // (azimuth +40 deg) appears as a slim crescent, as it would in that
+    // geometry.
+    vec3(-0.862, 0.309, -0.402).normalize()
 }
 
 fn fmt_x(n: f64) -> String {
@@ -100,6 +118,10 @@ struct Sim {
     show_gravity: bool,
     show_axis: bool,
     show_help: bool,
+    cloud_mode: CloudMode,
+    show_atmo: bool,
+    /// Longitude offset for GPU cloud-drift mode (fraction of full circle).
+    cloud_drift: f32,
 }
 
 #[macroquad::main(window_conf)]
@@ -195,6 +217,57 @@ async fn main() {
     )
     .unwrap();
 
+    let cloud_mat = load_material(
+        ShaderSource::Glsl {
+            vertex: CLOUD_VS,
+            fragment: CLOUD_FS,
+        },
+        MaterialParams {
+            pipeline_params: PipelineParams {
+                cull_face: CullFace::Back,
+                color_blend: Some(BlendState::new(
+                    Equation::Add,
+                    BlendFactor::Value(BlendValue::SourceAlpha),
+                    BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
+                )),
+                ..Default::default()
+            },
+            uniforms: vec![
+                UniformDesc::new("u_model", UniformType::Mat4),
+                UniformDesc::new("u_drift", UniformType::Float1),
+                UniformDesc::new("u_light_dir", UniformType::Float3),
+            ],
+            textures: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    // Additive glow shell: blends onto whatever is behind it, never occludes.
+    let atmo_mat = load_material(
+        ShaderSource::Glsl {
+            vertex: ATMO_VS,
+            fragment: ATMO_FS,
+        },
+        MaterialParams {
+            pipeline_params: PipelineParams {
+                cull_face: CullFace::Back,
+                depth_write: false,
+                color_blend: Some(BlendState::new(
+                    Equation::Add,
+                    BlendFactor::One,
+                    BlendFactor::One,
+                )),
+                ..Default::default()
+            },
+            uniforms: vec![
+                UniformDesc::new("u_cam_pos", UniformType::Float3),
+                UniformDesc::new("u_light_dir", UniformType::Float3),
+            ],
+            textures: Vec::new(),
+        },
+    )
+    .unwrap();
+
     // --- geometry -------------------------------------------------------------
     // 64 x 160 grid -> 61 440 indices: under one u16 draw call, still 10 400
     // vertices for the CPU tide pass (matches the web prototype's vertex count).
@@ -216,8 +289,23 @@ async fn main() {
 
     let mut ocean = TideOcean::new(1.0005, 64, 160, None);
 
+    // Cloud field: 256 x 128 lat/lon grid uploaded as an RGBA texture.
+    let mut clouds = CloudField::new();
+    let cloud_tex = Texture2D::from_rgba8(GRID_W as u16, GRID_H as u16, clouds.rgba8());
+    let cloud_mesh = SphereGrid {
+        rings: 48,
+        slices: 96,
+    }
+    .mesh(CLOUD_SHELL_RADIUS, Some(cloud_tex.clone()));
+    let atmo_mesh = SphereGrid {
+        rings: 32,
+        slices: 64,
+    }
+    .mesh(ATMO_SHELL_RADIUS, None);
+
     // --- simulation state ------------------------------------------------------
-    // Small CLI conveniences for benchmarking/screenshots: --cpu, --tide=<km>.
+    // Small CLI conveniences for benchmarking/screenshots: --cpu, --tide=<km>,
+    // --clouds=off|drift.
     let args: Vec<String> = std::env::args().collect();
     let tide_km = args
         .iter()
@@ -230,6 +318,16 @@ async fn main() {
     } else {
         TideMode::Gpu
     };
+    let cloud_mode = match args
+        .iter()
+        .find_map(|a| a.strip_prefix("--clouds="))
+        .map(|s| s.to_string())
+        .as_deref()
+    {
+        Some("off") => CloudMode::Off,
+        Some("drift") => CloudMode::Drift,
+        _ => CloudMode::Sim,
+    };
 
     let mut sim = Sim {
         running: true,
@@ -241,6 +339,9 @@ async fn main() {
         show_gravity: true,
         show_axis: false,
         show_help: true,
+        cloud_mode,
+        show_atmo: true,
+        cloud_drift: 0.0,
     };
     let mut cam = OrbitCam::new();
 
@@ -323,6 +424,16 @@ async fn main() {
         if is_key_pressed(KeyCode::H) {
             sim.show_help = !sim.show_help;
         }
+        if is_key_pressed(KeyCode::K) {
+            sim.cloud_mode = match sim.cloud_mode {
+                CloudMode::Sim => CloudMode::Drift,
+                CloudMode::Drift => CloudMode::Off,
+                CloudMode::Off => CloudMode::Sim,
+            };
+        }
+        if is_key_pressed(KeyCode::O) {
+            sim.show_atmo = !sim.show_atmo;
+        }
         cam.handle_input();
 
         if sim.running {
@@ -341,6 +452,29 @@ async fn main() {
         let moon_dir = moon_pos.normalize();
 
         let tide_amp = sim.tide_km / EARTH_RADIUS_KM; // scene units (1 = 1 Re)
+
+        // Clouds: the CPU circulation lives in the ground frame, so the
+        // (fixed, world-frame) Sun is expressed in that frame; the subsolar
+        // point then sweeps west once per sidereal day.
+        let dt_sim = if sim.running { dt * sim.speed } else { 0.0 };
+        match sim.cloud_mode {
+            CloudMode::Sim => {
+                let sun_ground = earth_model.inverse().transform_vector3(sun_dir());
+                let mut rem = dt_sim as f32;
+                while rem > 0.0 {
+                    let h = rem.min(MAX_CLOUD_STEP_S);
+                    clouds.step(h, sun_ground);
+                    rem -= h;
+                }
+                cloud_tex.update(&Image {
+                    bytes: clouds.rgba8().clone(),
+                    width: GRID_W as u16,
+                    height: GRID_H as u16,
+                });
+            }
+            CloudMode::Drift => sim.cloud_drift += dt_sim as f32 * CLOUD_DRIFT_RATE,
+            CloudMode::Off => {}
+        }
 
         // ------------------------------------------------------------ render
         clear_background(Color::new(0.0, 0.0, 0.02, 1.0));
@@ -371,12 +505,36 @@ async fn main() {
         gl_use_material(&water_mat);
         draw_mesh(&ocean.mesh);
 
+        // cloud deck — co-rotates with the ground (winds are surface-relative)
+        if !matches!(sim.cloud_mode, CloudMode::Off) {
+            cloud_mat.set_uniform("u_model", earth_model);
+            cloud_mat.set_uniform(
+                "u_drift",
+                if matches!(sim.cloud_mode, CloudMode::Drift) {
+                    sim.cloud_drift
+                } else {
+                    0.0
+                },
+            );
+            cloud_mat.set_uniform("u_light_dir", sun_dir());
+            gl_use_material(&cloud_mat);
+            draw_mesh(&cloud_mesh);
+        }
+
         // moon
         if sim.show_moon {
             moon_mat.set_uniform("u_model", Mat4::from_translation(moon_pos));
             moon_mat.set_uniform("u_light_dir", sun_dir());
             gl_use_material(&moon_mat);
             draw_mesh(&moon_mesh);
+        }
+
+        // atmospheric glow: additive rim shell drawn over the solid bodies
+        if sim.show_atmo {
+            atmo_mat.set_uniform("u_cam_pos", cam.position());
+            atmo_mat.set_uniform("u_light_dir", sun_dir());
+            gl_use_material(&atmo_mat);
+            draw_mesh(&atmo_mesh);
         }
 
         // helper lines (default material, colour-only)
@@ -427,8 +585,17 @@ async fn main() {
         } else {
             "off".to_string()
         };
+        let cloud_txt = match sim.cloud_mode {
+            CloudMode::Sim => format!(
+                "simulated on CPU ({:.2} ms, {} cells)",
+                clouds.last_ms,
+                GRID_W * GRID_H
+            ),
+            CloudMode::Drift => "GPU drift (frozen texture scrolls)".to_string(),
+            CloudMode::Off => "off".to_string(),
+        };
         let lines = [
-            format!("GlobeSim  [H] help"),
+            "GlobeSim  [H] help".to_string(),
             format!(
                 "{}  t = {:.2} sim days  speed {}",
                 if sim.running { "run " } else { "PAUSE" },
@@ -439,6 +606,16 @@ async fn main() {
             format!(
                 "high tide every ~{} real time",
                 fmt_hm(lunar_day_s / 2.0 / sim.speed)
+            ),
+            format!(
+                "clouds: {}{}  atmo: {}",
+                cloud_txt,
+                if matches!(sim.cloud_mode, CloudMode::Off) {
+                    String::new()
+                } else {
+                    format!("  cover {:.0}%", clouds.coverage * 100.0)
+                },
+                if sim.show_atmo { "on" } else { "off" }
             ),
             format!(
                 "{:.0} fps  {}",
@@ -459,8 +636,8 @@ async fn main() {
         if sim.show_help {
             draw_multiline_text(
                 "[space] pause  [c]/[g] cpu/gpu tide  [ / ] tide ±25 km  [-]/[=] speed ÷2/×2\n\
-                 [m] moon  [f] gravity line  [a] axis  [r] reset camera  [H] hide this\n\
-                 drag = orbit  wheel = zoom",
+                 [k] clouds sim/drift/off  [o] atmosphere  [m] moon  [f] gravity  [a] axis\n\
+                 [r] reset camera  [H] hide this  drag = orbit  wheel = zoom",
                 16.0,
                 screen_height() - 74.0,
                 14.0,

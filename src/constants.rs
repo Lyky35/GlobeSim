@@ -26,3 +26,15 @@ pub const EARTH_RADIUS_KM: f32 = 6371.0;
 /// sensible field of view) Moon distance in Earth radii, and Moon radius.
 pub const MOON_SCENE_DISTANCE: f32 = 6.5;
 pub const MOON_SCENE_RADIUS: f32 = 0.2727;
+
+/// Cloud deck and atmospheric glow shell radii, in Earth radii.
+pub const CLOUD_SHELL_RADIUS: f32 = 1.012;
+pub const ATMO_SHELL_RADIUS: f32 = 1.055;
+
+/// The cloud circulation is advanced in chunks of at most this many sim
+/// seconds per frame (huge backtrace steps would smear the field).
+pub const MAX_CLOUD_STEP_S: f32 = 4.0 * 3600.0;
+
+/// Zonal speed the GPU "drift" mode uses for the frozen cloud texture —
+/// the trade-wind speed — as a fraction of 2π of longitude per sim second.
+pub const CLOUD_DRIFT_RATE: f32 = 8.0 / (6.371e6 * std::f32::consts::TAU);
