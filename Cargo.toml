@@ -1,0 +1,13 @@
+[package]
+name = "globesim"
+version = "0.1.0"
+edition = "2021"
+description = "Real-time 3D Earth rotation + lunar tidal bulge simulation (CPU/GPU switchable)"
+license = "MIT"
+
+[dependencies]
+macroquad = "0.4"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+[profile.release]
+opt-level = 3

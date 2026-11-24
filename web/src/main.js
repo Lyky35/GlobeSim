@@ -45,7 +45,7 @@ function loadTex(url) {
 }
 
 // Starfield background (equirectangular).
-scene.background = loadTex('./assets/textures/stars_milky_way_2k.jpg');
+scene.background = loadTex('../assets/textures/stars_milky_way_2k.jpg');
 
 // Sun light + ambient fill.
 const sun = new THREE.DirectionalLight(0xffffff, 2.4);
@@ -66,7 +66,7 @@ earthGroup.add(spinner);
 const earthMesh = new THREE.Mesh(
   new THREE.SphereGeometry(EARTH_SCENE_RADIUS, 128, 96),
   new THREE.MeshPhongMaterial({
-    map: loadTex('./assets/textures/earth_topography_3840.jpg'),
+    map: loadTex('../assets/textures/earth_topography_3840.jpg'),
     specular: 0x111111,
     shininess: 6,
   })
@@ -113,7 +113,7 @@ scene.add(moonOrbit);
 
 const moonMesh = new THREE.Mesh(
   new THREE.SphereGeometry(MOON_SCENE_RADIUS, 64, 48),
-  new THREE.MeshPhongMaterial({ map: loadTex('./assets/textures/moon_2k.jpg') })
+  new THREE.MeshPhongMaterial({ map: loadTex('../assets/textures/moon_2k.jpg') })
 );
 moonMesh.position.set(MOON_SCENE_DISTANCE, 0, 0);
 moonOrbit.add(moonMesh);
