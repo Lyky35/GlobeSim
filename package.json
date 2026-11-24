@@ -1,0 +1,10 @@
+{
+  "name": "globe-sim",
+  "version": "0.1.0",
+  "description": "3D Earth rotation + lunar tidal bulge simulation (CPU/GPU switchable) with three.js",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "npx --yes serve . -l 8080"
+  }
+}
