@@ -56,16 +56,32 @@ uniform mat4 u_model;
 uniform vec3 u_moon_dir;   // direction Earth -> Moon, object space
 uniform float u_tide_amp;  // bulge amplitude A, scene units
 uniform vec3 u_cam_pos;    // camera position, world space
+uniform vec4 u_tsu_dir;    // xyz: impact point (world); w: crest ring radius (rad)
+uniform vec2 u_tsu;        // tsunami crest amplitude a0, ring angular width (rad)
+uniform float u_gpu;       // 1.0: shader displaces; 0.0: CPU already did
+uniform float u_base_r;    // undisplaced water shell radius
 
 varying vec3 v_normal;
 varying vec3 v_view;
+varying float v_anom;      // sea-surface anomaly, scene units
+varying float v_wave;      // tsunami crest component only
 
 void main() {
     vec3 dir = normalize(position);
     float cosPsi = dot(dir, u_moon_dir);
     float tide = u_tide_amp * (1.5 * cosPsi * cosPsi - 0.5);
-    vec3 p = position + dir * tide;
 
+    // Expanding tsunami crest: Gaussian ring at angular radius u_tsu_dir.w.
+    float psi = acos(clamp(dot(dir, u_tsu_dir.xyz), -1.0, 1.0));
+    float x = (psi - u_tsu_dir.w) / max(u_tsu.y, 1e-4);
+    float ring = u_tsu.x * exp(-(x * x));
+
+    float disp = u_gpu * (tide + ring);
+    v_wave = ring;
+    // CPU mode: the mesh positions already carry the anomaly, read it back.
+    v_anom = disp + (1.0 - u_gpu) * (length(position) - u_base_r);
+
+    vec3 p = position + dir * disp;
     vec3 world = (u_model * vec4(p, 1.0)).xyz;
     v_normal = normalize((u_model * vec4(normal.xyz, 0.0)).xyz);
     v_view = u_cam_pos - world;
@@ -78,8 +94,11 @@ precision mediump float;
 
 varying vec3 v_normal;
 varying vec3 v_view;
+varying float v_anom;
+varying float v_wave;
 
 uniform vec3 u_light_dir;
+uniform float u_anom_scale; // anomaly that maps to full red/blue
 
 void main() {
     vec3 n = normalize(v_normal);
@@ -90,7 +109,46 @@ void main() {
     vec3 deep = vec3(0.04, 0.20, 0.45);
     vec3 lit  = vec3(0.22, 0.45, 0.75);
     vec3 c = mix(deep, lit, lambert) + fres * vec3(0.10, 0.20, 0.35);
-    gl_FragColor = vec4(c, 0.40 + 0.35 * fres);
+
+    // Diverging sea-surface anomaly colormap: red = water gain (m up),
+    // blue = depression (m down), neutral at the undisturbed level.
+    // Scale is asymmetric: the equilibrium trough sits at -A/2, so normalise
+    // dips against half the gain scale to keep them readable.
+    float s = max(u_anom_scale, 1e-4);
+    float t = clamp(v_anom / (v_anom >= 0.0 ? s : 0.5 * s), -1.0, 1.0);
+    c = mix(c, vec3(0.82, 0.13, 0.10), 0.70 * max(t, 0.0));
+    c = mix(c, vec3(0.05, 0.25, 0.95), 0.80 * max(-t, 0.0));
+    // Breaking-white foam along tsunami crests.
+    float foam = smoothstep(0.004, 0.011, v_wave);
+    c = mix(c, vec3(0.90, 0.93, 0.95) * (0.35 + 0.75 * lambert), foam);
+
+    float a = min(0.40 + 0.35 * fres + 0.35 * abs(t), 0.88);
+    gl_FragColor = vec4(c, a);
+}
+"#;
+
+// Unlit tinted shell for impact flash / plume / dust haze (u_color rgba).
+pub const GLOW_VS: &str = r#"#version 100
+attribute vec3 position;
+attribute vec2 texcoord;
+attribute vec4 color0;
+attribute vec4 normal;
+
+uniform mat4 Projection;
+uniform mat4 u_model;
+
+void main() {
+    gl_Position = Projection * u_model * vec4(position, 1.0);
+}
+"#;
+
+pub const GLOW_FS: &str = r#"#version 100
+precision mediump float;
+
+uniform vec4 u_color;
+
+void main() {
+    gl_FragColor = u_color;
 }
 "#;
 

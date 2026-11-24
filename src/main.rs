@@ -1,6 +1,7 @@
 mod atmos;
 mod camera;
 mod constants;
+mod impact;
 mod shaders;
 mod sphere;
 mod tide;
@@ -8,6 +9,7 @@ mod tide;
 use atmos::{CloudField, GRID_H, GRID_W};
 use camera::OrbitCam;
 use constants::*;
+use impact::{Impact, Impactor, APHOPIS, CHICXULUB, TSUNAMI_C_M_S};
 use macroquad::miniquad::{
     BlendFactor, BlendState, BlendValue, CullFace, Equation, PipelineParams, ShaderSource,
     UniformDesc, UniformType,
@@ -17,8 +19,8 @@ use sphere::SphereGrid;
 use tide::{TideMode, TideOcean};
 
 use shaders::{
-    ATMO_FS, ATMO_VS, CLOUD_FS, CLOUD_VS, LAMBERT_FS, LAMBERT_VS, SKY_FS, SKY_VS, WATER_FS,
-    WATER_VS,
+    ATMO_FS, ATMO_VS, CLOUD_FS, CLOUD_VS, GLOW_FS, GLOW_VS, LAMBERT_FS, LAMBERT_VS, SKY_FS,
+    SKY_VS, WATER_FS, WATER_VS,
 };
 
 pub enum CloudMode {
@@ -94,6 +96,79 @@ fn fmt_hm(sec: f64) -> String {
     } else {
         format!("{:.1} d", sec / 86400.0)
     }
+}
+
+/// Orthonormal pair spanning the plane perpendicular to `axis` (used to walk
+/// a small circle of angular radius psi around the impact point).
+fn ring_basis(axis: Vec3) -> (Vec3, Vec3) {
+    let tmp = if axis.abs().y < 0.9 {
+        vec3(0.0, 1.0, 0.0)
+    } else {
+        vec3(1.0, 0.0, 0.0)
+    };
+    let e1 = axis.cross(tmp).normalize();
+    let e2 = axis.cross(e1);
+    (e1, e2)
+}
+
+/// Great-circle ring of angular radius `psi` around `axis`, drawn at `radius`
+/// after applying `rot` (ring points are built in the ground frame so they
+/// ride the Earth's rotation for free).
+fn draw_ring(rot: Mat4, axis: Vec3, e1: Vec3, e2: Vec3, psi: f32, radius: f32, color: Color) {
+    let segs = 72;
+    let (cp, sp) = (psi.cos(), psi.sin());
+    let mut prev = rot.transform_vector3((axis * cp + e1 * sp) * radius);
+    for k in 1..=segs {
+        let a = std::f32::consts::TAU * k as f32 / segs as f32;
+        let d = axis * cp + (e1 * a.cos() + e2 * a.sin()) * sp;
+        let p = rot.transform_vector3(d * radius);
+        draw_line_3d(prev, p, color);
+        prev = p;
+    }
+}
+
+/// One-off physics briefing printed to the console when an impact fires.
+fn report_impact(im: &Impact) {
+    let s = &im.stats;
+    let hiros = fmt_grouped((s.energy_mt / 0.015) as u64);
+    println!();
+    println!(
+        "=== {}-class impact: {:.0} m at {:.1} km/s ===",
+        im.rock.name,
+        im.rock.diameter_m,
+        im.rock.vel_m_s / 1000.0
+    );
+    println!(
+        "energy    {:.2} J = {:.0} Mt (about {} Hiroshimas)",
+        s.energy_j, s.energy_mt, hiros
+    );
+    println!("crater    ~{:.0} km final diameter", s.crater_km);
+    println!(
+        "seismic   Mw {:.1} (~1e-4 of the energy couples into quake waves)",
+        s.mw
+    );
+    println!(
+        "tsunami   ~{:.0} m crest near the crater, ring runs at {:.0} m/s, ocean-wide crossing ~{:.0} h",
+        s.tsunami_m,
+        TSUNAMI_C_M_S,
+        (std::f64::consts::PI * impact::EARTH_R_M) / TSUNAMI_C_M_S / 3600.0
+    );
+    println!(
+        "fireball  third-degree burns out to ~{:.0} km, ejecta plume ~{:.0} km",
+        s.fireball_km, s.plume_km
+    );
+    if s.dust0 > 0.3 {
+        println!(
+            "climate   ~{:.0}% global dust loading -> impact winter (3-yr e-folding)",
+            s.dust0 * 100.0
+        );
+    } else {
+        println!(
+            "climate   dust loading {:.1}% — regional disaster, no global cooling",
+            s.dust0 * 100.0
+        );
+    }
+    println!("(water: red = sea-surface gain, blue = depression)");
 }
 
 /// Decode an image file (JPEG/PNG) with the `image` crate and upload it as a
@@ -194,6 +269,11 @@ async fn main() {
                 UniformDesc::new("u_tide_amp", UniformType::Float1),
                 UniformDesc::new("u_cam_pos", UniformType::Float3),
                 UniformDesc::new("u_light_dir", UniformType::Float3),
+                UniformDesc::new("u_tsu_dir", UniformType::Float4),
+                UniformDesc::new("u_tsu", UniformType::Float2),
+                UniformDesc::new("u_gpu", UniformType::Float1),
+                UniformDesc::new("u_base_r", UniformType::Float1),
+                UniformDesc::new("u_anom_scale", UniformType::Float1),
             ],
             textures: Vec::new(),
         },
@@ -268,6 +348,58 @@ async fn main() {
     )
     .unwrap();
 
+    // Flash / plume / dust-haze shells: unlit tinted quads, one material each
+    // so their uniforms can't leak between draw calls.
+    let glow_params = |additive: bool| MaterialParams {
+        pipeline_params: PipelineParams {
+            cull_face: CullFace::Back,
+            depth_write: false,
+            color_blend: Some(BlendState::new(
+                Equation::Add,
+                if additive {
+                    BlendFactor::One
+                } else {
+                    BlendFactor::Value(BlendValue::SourceAlpha)
+                },
+                if additive {
+                    BlendFactor::One
+                } else {
+                    BlendFactor::OneMinusValue(BlendValue::SourceAlpha)
+                },
+            )),
+            ..Default::default()
+        },
+        uniforms: vec![
+            UniformDesc::new("u_model", UniformType::Mat4),
+            UniformDesc::new("u_color", UniformType::Float4),
+        ],
+        textures: Vec::new(),
+    };
+    let flash_mat = load_material(
+        ShaderSource::Glsl {
+            vertex: GLOW_VS,
+            fragment: GLOW_FS,
+        },
+        glow_params(true),
+    )
+    .unwrap();
+    let plume_mat = load_material(
+        ShaderSource::Glsl {
+            vertex: GLOW_VS,
+            fragment: GLOW_FS,
+        },
+        glow_params(false),
+    )
+    .unwrap();
+    let dust_mat = load_material(
+        ShaderSource::Glsl {
+            vertex: GLOW_VS,
+            fragment: GLOW_FS,
+        },
+        glow_params(false),
+    )
+    .unwrap();
+
     // --- geometry -------------------------------------------------------------
     // 64 x 160 grid -> 61 440 indices: under one u16 draw call, still 10 400
     // vertices for the CPU tide pass (matches the web prototype's vertex count).
@@ -302,10 +434,15 @@ async fn main() {
         slices: 64,
     }
     .mesh(ATMO_SHELL_RADIUS, None);
+    let glow_mesh = SphereGrid {
+        rings: 16,
+        slices: 32,
+    }
+    .mesh(1.0, None);
 
     // --- simulation state ------------------------------------------------------
     // Small CLI conveniences for benchmarking/screenshots: --cpu, --tide=<km>,
-    // --clouds=off|drift.
+    // --clouds=off|drift, --impact=apophis|chicxulub.
     let args: Vec<String> = std::env::args().collect();
     let tide_km = args
         .iter()
@@ -328,6 +465,10 @@ async fn main() {
         Some("drift") => CloudMode::Drift,
         _ => CloudMode::Sim,
     };
+    let pending_rock: Option<Impactor> = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--impact="))
+        .map(|s| if s == "chicxulub" { CHICXULUB } else { APHOPIS });
 
     let mut sim = Sim {
         running: true,
@@ -360,6 +501,13 @@ async fn main() {
     // keep reframing until the user grabs the camera or the window settles.
     let mut framing_active = true;
     let t_start = get_time();
+
+    // Impact state: a CLI-launched impact waits for the framing to settle;
+    // impact_flash_t runs on the real clock (flash & plume are seconds-long).
+    let mut pending = pending_rock;
+    let mut impact: Option<Impact> = None;
+    let mut impact_flash_t = -1.0f32;
+    let mut spawn_rock: Option<Impactor> = None;
 
     // Lunar day and the resulting high-tide interval at the current speed.
     let lunar_day_s = SIDEREAL_DAY_S * SIDEREAL_MONTH_S / (SIDEREAL_MONTH_S - SIDEREAL_DAY_S);
@@ -434,6 +582,12 @@ async fn main() {
         if is_key_pressed(KeyCode::O) {
             sim.show_atmo = !sim.show_atmo;
         }
+        if is_key_pressed(KeyCode::I) {
+            spawn_rock = Some(APHOPIS);
+        }
+        if is_key_pressed(KeyCode::U) {
+            spawn_rock = Some(CHICXULUB);
+        }
         cam.handle_input();
 
         if sim.running {
@@ -452,11 +606,32 @@ async fn main() {
         let moon_dir = moon_pos.normalize();
 
         let tide_amp = sim.tide_km / EARTH_RADIUS_KM; // scene units (1 = 1 Re)
+        let dt_sim = if sim.running { dt * sim.speed } else { 0.0 };
+
+        // Impacts: keys i/u queue one; a CLI --impact fires once framing ends.
+        if pending.is_some() && get_time() - t_start > 2.4 {
+            spawn_rock = pending.take();
+        }
+        if let Some(rock) = spawn_rock.take() {
+            let gd = earth_model.inverse().transform_vector3(cam.position().normalize());
+            let im = Impact::trigger(rock, gd);
+            report_impact(&im);
+            impact = Some(im);
+            impact_flash_t = 0.0;
+        }
+        if impact_flash_t >= 0.0 {
+            impact_flash_t += dt as f32;
+        }
+        if let Some(im) = impact.as_mut() {
+            im.step(dt_sim);
+        }
+        // Impact dust dims convection (impact winter) — Chicxulub-class wipes
+        // the deck, Apophis-class is optically negligible.
+        clouds.dust = impact.as_ref().map_or(0.0, |im| im.dust());
 
         // Clouds: the CPU circulation lives in the ground frame, so the
         // (fixed, world-frame) Sun is expressed in that frame; the subsolar
         // point then sweeps west once per sidereal day.
-        let dt_sim = if sim.running { dt * sim.speed } else { 0.0 };
         match sim.cloud_mode {
             CloudMode::Sim => {
                 let sun_ground = earth_model.inverse().transform_vector3(sun_dir());
@@ -491,14 +666,40 @@ async fn main() {
         gl_use_material(&earth_mat);
         draw_mesh(&earth_mesh);
 
-        // ocean — CPU pass displaces the mesh in Rust, GPU pass in the shader
+        // ocean — CPU pass displaces the mesh in Rust, GPU pass in the shader;
+        // both fold in the tsunami crest ring, both feed the red/blue anomaly
+        // colormap the same way (GPU by formula, CPU by reading the mesh back).
+        let wave = impact
+            .as_ref()
+            .map(|im| im.wave(earth_model.transform_vector3(im.ground_dir)));
         match sim.mode {
-            TideMode::Cpu => ocean.update_cpu(moon_dir, tide_amp),
+            TideMode::Cpu => ocean.update_cpu(moon_dir, tide_amp, wave.as_ref()),
             TideMode::Gpu => {
                 water_mat.set_uniform("u_moon_dir", moon_dir);
                 water_mat.set_uniform("u_tide_amp", tide_amp);
             }
         }
+        let wave_a0 = wave.as_ref().map_or(0.0, |w| w.a0);
+        match &wave {
+            Some(w) => {
+                water_mat.set_uniform("u_tsu_dir", vec4(w.dir.x, w.dir.y, w.dir.z, w.front));
+                water_mat.set_uniform("u_tsu", vec2(w.a0, w.width));
+            }
+            None => {
+                water_mat.set_uniform("u_tsu_dir", vec4(0.0f32, 0.0, 0.0, 0.0));
+                water_mat.set_uniform("u_tsu", vec2(0.0f32, 0.04));
+            }
+        }
+        water_mat.set_uniform(
+            "u_gpu",
+            if matches!(sim.mode, TideMode::Gpu) {
+                1.0f32
+            } else {
+                0.0f32
+            },
+        );
+        water_mat.set_uniform("u_base_r", 1.0005f32);
+        water_mat.set_uniform("u_anom_scale", (tide_amp + wave_a0).max(1e-4));
         water_mat.set_uniform("u_model", Mat4::IDENTITY);
         water_mat.set_uniform("u_cam_pos", cam.position());
         water_mat.set_uniform("u_light_dir", sun_dir());
@@ -521,6 +722,18 @@ async fn main() {
             draw_mesh(&cloud_mesh);
         }
 
+        // impact dust haze: a brown veil replacing the deck in an impact winter
+        let dust = impact.as_ref().map_or(0.0, |im| im.dust());
+        if dust > 0.015 {
+            dust_mat.set_uniform("u_model", Mat4::IDENTITY);
+            dust_mat.set_uniform(
+                "u_color",
+                vec4(0.48, 0.37, 0.27, (dust * 0.6).min(0.55)),
+            );
+            gl_use_material(&dust_mat);
+            draw_mesh(&atmo_mesh);
+        }
+
         // moon
         if sim.show_moon {
             moon_mat.set_uniform("u_model", Mat4::from_translation(moon_pos));
@@ -535,6 +748,52 @@ async fn main() {
             atmo_mat.set_uniform("u_light_dir", sun_dir());
             gl_use_material(&atmo_mat);
             draw_mesh(&atmo_mesh);
+        }
+
+        // fireball flash + rising ejecta plume (real-seconds envelope)
+        if let Some(im) = &impact {
+            let fl = impact_flash_t;
+            let dw = earth_model.transform_vector3(im.ground_dir);
+            if fl >= 0.0 && fl < 0.9 {
+                let m = Mat4::from_translation(dw * 1.02)
+                    * Mat4::from_cols(
+                        vec4(0.05, 0.0, 0.0, 0.0),
+                        vec4(0.0, 0.05, 0.0, 0.0),
+                        vec4(0.0, 0.0, 0.05, 0.0),
+                        vec4(0.0, 0.0, 0.0, 1.0),
+                    );
+                flash_mat.set_uniform("u_model", m);
+                flash_mat.set_uniform("u_color", vec4(1.0, 0.98, 0.9, 1.0 - fl / 0.9));
+                gl_use_material(&flash_mat);
+                draw_mesh(&glow_mesh);
+            }
+            if fl >= 0.0 && fl < 4.0 {
+                let h = 0.05 + 0.10 * (fl / 2.5).min(1.0);
+                let y = vec3(0.0, 1.0, 0.0);
+                let axis = y.cross(dw);
+                let rot = if axis.length_squared() > 1e-8 {
+                    Mat4::from_axis_angle(axis.normalize(), y.dot(dw).clamp(-1.0, 1.0).acos())
+                } else if dw.y > 0.0 {
+                    Mat4::IDENTITY
+                } else {
+                    Mat4::from_axis_angle(vec3(1.0, 0.0, 0.0), std::f32::consts::PI)
+                };
+                let m = rot
+                    * Mat4::from_translation(vec3(0.0, 1.0 + h * 0.5, 0.0))
+                    * Mat4::from_cols(
+                        vec4(0.018, 0.0, 0.0, 0.0),
+                        vec4(0.0, h * 0.5, 0.0, 0.0),
+                        vec4(0.0, 0.0, 0.018, 0.0),
+                        vec4(0.0, 0.0, 0.0, 1.0),
+                    );
+                plume_mat.set_uniform("u_model", m);
+                plume_mat.set_uniform(
+                    "u_color",
+                    vec4(0.55, 0.45, 0.38, 0.65 * (1.0 - fl / 4.0)),
+                );
+                gl_use_material(&plume_mat);
+                draw_mesh(&glow_mesh);
+            }
         }
 
         // helper lines (default material, colour-only)
@@ -569,6 +828,38 @@ async fn main() {
             }
         }
 
+        // impact wavefronts: seismic ring racing over the ground (orange),
+        // airblast ring in the atmosphere shell (pale cyan)
+        if let Some(im) = &impact {
+            let (e1, e2) = ring_basis(im.ground_dir);
+            let psi_s = im.seismic_psi();
+            if psi_s > 0.02 && psi_s < std::f32::consts::PI + 0.05 {
+                let a = (1.0 - psi_s / (std::f32::consts::PI + 0.05)).max(0.15);
+                draw_ring(
+                    earth_model,
+                    im.ground_dir,
+                    e1,
+                    e2,
+                    psi_s,
+                    1.004,
+                    Color::new(1.0, 0.55, 0.15, 0.85 * a),
+                );
+            }
+            let psi_k = im.shock_psi();
+            if psi_k > 0.02 && psi_k < std::f32::consts::PI + 0.05 {
+                let a = (1.0 - psi_k / (std::f32::consts::PI + 0.05)).max(0.1);
+                draw_ring(
+                    earth_model,
+                    im.ground_dir,
+                    e1,
+                    e2,
+                    psi_k,
+                    ATMO_SHELL_RADIUS + 0.012,
+                    Color::new(0.75, 0.9, 1.0, 0.5 * a),
+                );
+            }
+        }
+
         // ---------------------------------------------------------------- HUD
         set_default_camera();
         let mode_txt = match sim.mode {
@@ -594,7 +885,7 @@ async fn main() {
             CloudMode::Drift => "GPU drift (frozen texture scrolls)".to_string(),
             CloudMode::Off => "off".to_string(),
         };
-        let lines = [
+        let mut lines = vec![
             "GlobeSim  [H] help".to_string(),
             format!(
                 "{}  t = {:.2} sim days  speed {}",
@@ -618,6 +909,11 @@ async fn main() {
                 if sim.show_atmo { "on" } else { "off" }
             ),
             format!(
+                "sea anomaly colour: red = +m gain, blue = -m dip, full scale +{} / -{} m",
+                fmt_grouped(((tide_amp + wave_a0) * EARTH_RADIUS_KM * 1000.0) as u64),
+                fmt_grouped((tide_amp * 0.5 * EARTH_RADIUS_KM * 1000.0) as u64)
+            ),
+            format!(
                 "{:.0} fps  {}",
                 get_fps(),
                 match sim.mode {
@@ -630,16 +926,38 @@ async fn main() {
                 }
             ),
         ];
+        if let Some(im) = &impact {
+            let s = &im.stats;
+            lines.push(format!(
+                "IMPACT {} {} m @ {:.1} km/s = {} Mt (~{} Hiroshimas)",
+                im.rock.name.to_uppercase(),
+                im.rock.diameter_m as u32,
+                im.rock.vel_m_s / 1000.0,
+                fmt_grouped(s.energy_mt as u64),
+                fmt_grouped((s.energy_mt / 0.015) as u64)
+            ));
+            lines.push(format!(
+                "  age {}  crater ~{:.0} km  Mw {:.1}  tsunami crest ~{:.0} m, ring {:.0} deg @ {:.0} m/s  dust {:.1}%",
+                fmt_hm(im.age_s),
+                s.crater_km,
+                s.mw,
+                s.tsunami_m,
+                wave.as_ref().map_or(0.0, |w| w.front.to_degrees()),
+                TSUNAMI_C_M_S,
+                im.dust() * 100.0
+            ));
+        }
         for (i, line) in lines.iter().enumerate() {
             draw_text(line, 16.0, 20.0 + 22.0 * i as f32, 15.0, WHITE);
         }
         if sim.show_help {
             draw_multiline_text(
-                "[space] pause  [c]/[g] cpu/gpu tide  [ / ] tide ±25 km  [-]/[=] speed ÷2/×2\n\
+                "[space] pause  [c]/[g] cpu/gpu tide  [ / ] tide +/-25 km  [-]/[=] speed /2/x2\n\
                  [k] clouds sim/drift/off  [o] atmosphere  [m] moon  [f] gravity  [a] axis\n\
-                 [r] reset camera  [H] hide this  drag = orbit  wheel = zoom",
+                 [i] Apophis impact  [u] 10-km impact  [r] reset camera  [H] hide this\n\
+                 drag = orbit  wheel = zoom",
                 16.0,
-                screen_height() - 74.0,
+                screen_height() - 94.0,
                 14.0,
                 None,
                 WHITE,

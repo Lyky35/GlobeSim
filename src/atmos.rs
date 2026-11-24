@@ -36,6 +36,9 @@ pub struct CloudField {
     pub coverage: f32,
     /// ms spent in the CPU circulation pass last frame.
     pub last_ms: f64,
+    /// Global dust loading 0..1 from an impact: dims insolation, so the
+    /// dayside growth term starves and the deck collapses globally.
+    pub dust: f32,
 }
 
 /// Deterministic 32-bit hash for the initial noise seed.
@@ -64,6 +67,7 @@ impl CloudField {
             pixels: vec![0; GRID_W * GRID_H * 4],
             coverage,
             last_ms: 0.0,
+            dust: 0.0,
         }
     }
 
@@ -160,6 +164,8 @@ impl CloudField {
     pub fn step_convection(&mut self, dt: f32, sun: macroquad::prelude::Vec3) {
         let lat_s = sun.y.asin().to_degrees();
         let lon_s = sun.x.atan2(sun.z).to_degrees();
+        // Impact dust scatters incoming sunlight before it reaches the deck.
+        let dim = 1.0 - 0.9 * self.dust.min(1.0);
         for i in 0..GRID_H {
             let lat = self.cell_lat(i);
             let (sl, cl) = (lat.to_radians().sin(), lat.to_radians().cos());
@@ -168,7 +174,7 @@ impl CloudField {
                 let lon = self.cell_lon(j);
                 let cos_zen = sl * lat_s.to_radians().sin()
                     + cl * lat_s.to_radians().cos() * (lon - lon_s).to_radians().cos();
-                let ins = cos_zen.max(0.0).powf(1.5);
+                let ins = cos_zen.max(0.0).powf(1.5) * dim;
                 let c = self.field[i * GRID_W + j];
                 let dc = GROW_PER_S * (1.0 - c) * ins * moist - DECAY_PER_S * c;
                 self.field[i * GRID_W + j] = (c + dc * dt).clamp(0.0, 1.0);
@@ -274,5 +280,17 @@ mod tests {
         assert!(day > 0.3, "subsolar cloud should grow, got {day}");
         assert!(night < day, "nightside should be cloudier-poor, {night} vs {day}");
         assert!(f.field.iter().all(|c| *c >= 0.0 && *c <= 1.0));
+    }
+
+    #[test]
+    fn impact_dust_collapses_the_deck() {
+        let mut f = CloudField::new();
+        f.field.iter_mut().for_each(|c| *c = 0.6);
+        f.dust = 1.0; // total darkness under the soot
+        for _ in 0..10 {
+            f.step_convection(86400.0, macroquad::prelude::vec3(0.0, 0.0, 1.0));
+        }
+        let day = f.at(GRID_H / 2, 0); // subsolar point: best case
+        assert!(day < 0.45, "dust must starve convection, got {day}");
     }
 }

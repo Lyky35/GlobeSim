@@ -1,3 +1,4 @@
+use crate::impact::{wave_h, WaveState};
 use crate::sphere::SphereGrid;
 use macroquad::prelude::*;
 
@@ -64,15 +65,16 @@ impl TideOcean {
 
     /// Displaced radius of grid point (i, j) — also used for finite-difference
     /// normals, so neighbours must wrap longitude and clamp latitude.
-    fn displaced(&self, i: u32, j: u32, moon: Vec3, amp: f32) -> Vec3 {
+    fn displaced(&self, i: u32, j: u32, moon: Vec3, amp: f32, wave: Option<&WaveState>) -> Vec3 {
         let d = self.dirs[self.grid.index(i, j % self.grid.slices)];
-        d * (self.base_radius + tide_height(d.dot(moon), amp))
+        let h = self.base_radius + tide_height(d.dot(moon), amp) + wave.map_or(0.0, |w| wave_h(d, w));
+        d * h
     }
 
     /// CPU pass: reposition and re-normal every vertex. Normals come from
     /// central differences on the (wrapping) grid, falling back to one-sided
     /// differences at the poles.
-    pub fn update_cpu(&mut self, moon: Vec3, amp: f32) {
+    pub fn update_cpu(&mut self, moon: Vec3, amp: f32, wave: Option<&WaveState>) {
         let start = std::time::Instant::now();
         let grid = self.grid;
         let base = self.base_radius;
@@ -82,7 +84,7 @@ impl TideOcean {
             for j in 0..grid.slices {
                 let idx = grid.index(i, j);
                 let d = self.dirs[idx];
-                let h = base + tide_height(d.dot(moon), amp);
+                let h = base + tide_height(d.dot(moon), amp) + wave.map_or(0.0, |w| wave_h(d, w));
                 self.mesh.vertices[idx].position = d * h;
             }
         }
@@ -93,7 +95,8 @@ impl TideOcean {
             for j in 0..grid.slices {
                 let idx = grid.index(i, j);
                 let jm = (j + grid.slices - 1) % grid.slices;
-                let du = self.displaced(i, j + 1, moon, amp) - self.displaced(i, jm, moon, amp);
+                let du = self.displaced(i, j + 1, moon, amp, wave)
+                    - self.displaced(i, jm, moon, amp, wave);
                 let (i0, i1) = if i == 0 {
                     (0, 1)
                 } else if i == grid.rings {
@@ -101,7 +104,8 @@ impl TideOcean {
                 } else {
                     (i - 1, i + 1)
                 };
-                let dv = self.displaced(i1, j, moon, amp) - self.displaced(i0, j, moon, amp);
+                let dv =
+                    self.displaced(i1, j, moon, amp, wave) - self.displaced(i0, j, moon, amp, wave);
                 let mut n = du.cross(dv).normalize();
                 if n.dot(self.dirs[idx]) < 0.0 {
                     n = -n;
@@ -149,7 +153,7 @@ mod tests {
     fn cpu_mesh_update_moves_vertices_to_bulges() {
         // No GPU context needed: TideOcean::new only builds data.
         let mut ocean = TideOcean::new(1.0, 32, 64, None);
-        ocean.update_cpu(vec3(1.0, 0.0, 0.0), 0.1);
+        ocean.update_cpu(vec3(1.0, 0.0, 0.0), 0.1, None);
 
         // Grid: lat 0 row is i == rings/2; lon 0 (j=0) is dir (0,0,1)... choose
         // directions by searching for the best dot products instead.
@@ -189,5 +193,31 @@ mod tests {
             );
             assert!(n.dot(v.position) >= -1e-3, "normal must point outward");
         }
+    }
+
+    #[test]
+    fn cpu_pass_raises_tsunami_ring() {
+        let mut ocean = TideOcean::new(1.0005, 32, 64, None);
+        let wave = WaveState {
+            dir: vec3(1.0, 0.0, 0.0),
+            front: 0.3,
+            a0: 0.02,
+            width: 0.04,
+        };
+        ocean.update_cpu(vec3(0.0, 0.0, 1.0), 0.0, Some(&wave));
+
+        let radius_near = |target: Vec3| -> f32 {
+            ocean
+                .mesh
+                .vertices
+                .iter()
+                .filter(|v| target.dot(v.position.normalize()) > 0.99)
+                .map(|v| v.position.length())
+                .fold(0.0f32, f32::max)
+        };
+        let crest = radius_near(vec3(0.3f32.cos(), 0.0, 0.3f32.sin()));
+        let calm = radius_near(vec3(1.0f32.cos(), 0.0, 1.0f32.sin())); // 57 deg out
+        assert!(crest > 1.015, "ring crest radius {crest}");
+        assert!(calm < 1.002, "outside the ring {calm}");
     }
 }

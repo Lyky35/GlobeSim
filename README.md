@@ -29,7 +29,9 @@ Useful flags (mainly for benchmarking/screenshots):
 cargo run --release -- --cpu          # start in CPU tide mode
 cargo run --release -- --tide=600     # start with a 600 km bulge
 cargo run --release -- --clouds=off   # start with the cloud deck off
-cargo test                            # unit tests: tide math, CPU mesh, cloud dynamics
+cargo run --release -- --impact=apophis    # Apophis-class strike once framing settles
+cargo run --release -- --impact=chicxulub  # 10-km killer for scale
+cargo test                            # unit tests: tide math, CPU mesh, clouds, impact physics
 ```
 
 ### Controls
@@ -46,6 +48,8 @@ cargo test                            # unit tests: tide math, CPU mesh, cloud d
 | `m` | toggle Moon |
 | `f` | toggle dashed gravity vector (Earth ← Moon) |
 | `a` | toggle rotation axis + equator |
+| `i` | Apophis-class impact (340 m, 1 176 Mt) under the camera |
+| `u` | Chicxulub-class impact (10 km, ~75 Gt) under the camera |
 | `r` | reset camera |
 | `h` | toggle this help |
 
@@ -79,6 +83,24 @@ cargo test                            # unit tests: tide math, CPU mesh, cloud d
     "cheap vs. simulated" switch as the tide.
   - *Scattering glow*: an additive rayleigh-ish shell, brightest at the limb and
     on the dayside, with extra forward-scatter toward the Sun.
+- **Sea-surface anomaly colouring** — the water shell is tinted by its height
+  anomaly in metres: **red = water gain, blue = depression**, neutral at the
+  undisturbed level (full red/blue at ±the current tide amplitude, dips scaled
+  ×2 since the equilibrium trough is −A/2). Works identically on both compute
+  paths: the GPU shader colours `tide + tsunami` straight from the formula, the
+  CPU pass reads the anomaly back off the displaced mesh. The HUD prints the
+  full-scale value in metres.
+- **Asteroid impacts** (`i` / `u`, or `--impact=`) — an Apophis-class strike
+  (340 m, 6.2×10¹⁰ kg, 12.6 km/s → **1 176 Mt**, ~78 000 Hiroshimas) or a
+  Chicxulub-class 10 km rock for scale. The console prints a physics briefing
+  and the globe shows the consequences: fireball flash and rising ejecta plume,
+  an expanding **tsunami crest ring** (deep-ocean wave speed √(g·4 km) ≈
+  198 m/s, Gaussian crest with cylindrical spreading — painted in the red/blue
+  anomaly colormap with foam on the crest), an orange seismic ring racing over
+  the ground at ~4.5 km/s, a pale airblast ring in the atmosphere, and global
+  dust loading: Apophis ≈ 1% (regional disaster, climate untouched) versus
+  Chicxulub ≈ 90% — an **impact winter**: the dust dims insolation in the cloud
+  model and the deck collapses, replaced by a brown soot veil.
 - **Extras** — Milky Way sky sphere, MSAA, HUD with fps / sim time / measured
   tide-pass time / real-time high-tide interval.
 
@@ -104,6 +126,22 @@ itself into the helical cloud bands you see from orbit. The backtrace transport
 implements `-v·∇c` but not the `-c∇·v` compression term (the wind field is not
 divergence-free), so a global mass fixer restores the conserved total each
 step — the same trick real GCMs use.
+
+An impact is booked from order-of-magnitude scaling laws, shared by the CPU and
+GPU render paths: energy `½mv²` (Apophis: 4.9×10¹⁸ J = 1 176 Mt); transient
+crater diameter from Collins et al. (2005) gravity-regime scaling
+(`1.161·(ρi/ρt)^⅓·L^0.78·v^0.44·g^−0.22`, ×1.3 for the final crater → ~6 km
+for Apophis, ~100 km for Chicxulub); seismic `M_w = (log₁₀E_rad − 4.8)/1.5`
+with ~10⁻⁴ of the energy coupled into quake waves (M6.6 / M9.8). The ocean
+punched out of the crater refalls as a Gaussian crest ring running at the
+deep-water long-wave speed √(g·h) ≈ 198 m/s, spreading as 1/(1+r/4000 km) and
+fading over days; an orange seismic ring (4.5 km/s) and an acoustic airblast
+ring (340 m/s) race ahead of it. Ejecta dust scales with energy and decays on
+a ~3-year residence time, feeding straight back into the cloud model's
+insolation term — which is why the 10-km case starves convection and turns
+into an impact winter. All heights remain exaggerated for visibility, in the
+same convention as the tide, and the anomaly colormap reports the exaggerated
+metres the scene actually draws.
 
 ## Web prototype (`web/`)
 
