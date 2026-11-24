@@ -219,8 +219,10 @@ $('btn-reset').addEventListener('click', () => {
 
 // Static part of the stats panel (tide period etc).
 function updateStatsStatic() {
-  // Time between successive high tides at a fixed point ~ half a lunar day.
-  const lunarDay = 2 * SIDEREAL_DAY_S * SIDEREAL_MONTH_S / (SIDEREAL_MONTH_S - SIDEREAL_DAY_S);
+  // Lunar day (Sun-to-Sun... Moon-to-Moon passage of the meridian):
+  // 1 / (1/sidereal day - 1/sidereal month). Fixed points see two high
+  // tides per lunar day, hence lunarDay / 2 between high tides.
+  const lunarDay = SIDEREAL_DAY_S * SIDEREAL_MONTH_S / (SIDEREAL_MONTH_S - SIDEREAL_DAY_S);
   $('stat-period').textContent =
     `high tide every ~${fmtH((lunarDay / 2) / state.speed)} real time`;
 }
