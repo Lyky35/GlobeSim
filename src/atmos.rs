@@ -28,6 +28,24 @@ const GROW_PER_S: f32 = 1.0 / (1.2 * DAY_S);
 /// ...and decays with a ~6-day e-folding (persisting cirrus on the nightside).
 const DECAY_PER_S: f32 = 1.0 / (6.0 * DAY_S);
 
+/// Zonal (u, east+) and meridional (v, north+) surface wind belts in m/s:
+/// trade easterlies near ±15°, mid-latitude westerlies near ±47°, plus a
+/// Hadley/Ferrel meridional cell v = -H sin(2·lat). Shared by the cloud
+/// deck (advection) and the climate model (stress curl, air advection).
+pub fn wind_belts(lat_deg: f32) -> (f32, f32) {
+    let g = lat_deg.to_radians();
+    let band = |center_deg: f32, width_deg: f32, amp: f32| {
+        let d = (g - center_deg.to_radians()) / width_deg.to_radians();
+        amp * (-d * d).exp()
+    };
+    let u = band(15.0, 14.0, -8.0)
+        + band(-15.0, 14.0, -8.0)
+        + band(47.0, 18.0, 20.0)
+        + band(-47.0, 18.0, 20.0);
+    let v = -3.0 * (2.0 * g).sin();
+    (u, v)
+}
+
 pub struct CloudField {
     field: Vec<f32>,
     next: Vec<f32>,
@@ -86,6 +104,11 @@ impl CloudField {
         90.0 - (i as f32 + 0.5) * 180.0 / GRID_H as f32
     }
 
+    /// Read-only view of the coverage grid (for the climate model's shading).
+    pub fn coverage_grid(&self) -> &[f32] {
+        &self.field
+    }
+
     pub fn cell_lon(&self, j: usize) -> f32 {
         (j as f32 + 0.5) * 360.0 / GRID_W as f32
     }
@@ -94,17 +117,7 @@ impl CloudField {
     /// trade easterlies near ±15°, mid-latitude westerlies near ±47°, plus a
     /// Hadley/Ferrel meridional cell v = -H sin(2·lat).
     pub fn wind(&self, lat_deg: f32) -> (f32, f32) {
-        let g = lat_deg.to_radians();
-        let band = |center_deg: f32, width_deg: f32, amp: f32| {
-            let d = (g - center_deg.to_radians()) / width_deg.to_radians();
-            amp * (-d * d).exp()
-        };
-        let u = band(15.0, 14.0, -8.0)
-            + band(-15.0, 14.0, -8.0)
-            + band(47.0, 18.0, 20.0)
-            + band(-47.0, 18.0, 20.0);
-        let v = -3.0 * (2.0 * g).sin();
-        (u, v)
+        wind_belts(lat_deg)
     }
 
     /// Sample the field at arbitrary (lat_deg, lon_deg): bilinear in the
@@ -278,7 +291,10 @@ mod tests {
         let day = f.at(GRID_H / 2, 0); // lat ~0, lon ~0.25: subsolar
         let night = f.at(GRID_H / 2, GRID_W / 2); // lon ~180: midnight
         assert!(day > 0.3, "subsolar cloud should grow, got {day}");
-        assert!(night < day, "nightside should be cloudier-poor, {night} vs {day}");
+        assert!(
+            night < day,
+            "nightside should be cloudier-poor, {night} vs {day}"
+        );
         assert!(f.field.iter().all(|c| *c >= 0.0 && *c <= 1.0));
     }
 

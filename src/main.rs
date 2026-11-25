@@ -1,5 +1,6 @@
 mod atmos;
 mod camera;
+mod climate;
 mod constants;
 mod impact;
 mod shaders;
@@ -8,6 +9,7 @@ mod tide;
 
 use atmos::{CloudField, GRID_H, GRID_W};
 use camera::OrbitCam;
+use climate::{Climate, LandMask, CGH, CGW, STREAK_H, STREAK_W};
 use constants::*;
 use impact::{Impact, Impactor, APHOPIS, CHICXULUB, TSUNAMI_C_M_S};
 use macroquad::miniquad::{
@@ -20,7 +22,7 @@ use tide::{TideMode, TideOcean};
 
 use shaders::{
     ATMO_FS, ATMO_VS, CLOUD_FS, CLOUD_VS, GLOW_FS, GLOW_VS, GRAVITY_FS, GRAVITY_VS, LAMBERT_FS,
-    LAMBERT_VS, SKY_FS, SKY_VS, WATER_FS, WATER_VS,
+    LAMBERT_VS, SKY_FS, SKY_VS, TEX_FS, TEX_VS, WATER_FS, WATER_VS,
 };
 
 pub enum CloudMode {
@@ -197,6 +199,9 @@ struct Sim {
     cloud_mode: CloudMode,
     show_atmo: bool,
     show_anomaly: bool,
+    show_temp: bool,
+    show_winds: bool,
+    show_currents: bool,
     /// Longitude offset for GPU cloud-drift mode (fraction of full circle).
     cloud_drift: f32,
 }
@@ -206,7 +211,15 @@ async fn main() {
     // --- assets -------------------------------------------------------------
     // macroquad's built-in loader has no JPEG decoder, so decode with `image`
     // and upload manually. Run from the repo root.
-    let earth_tex = load_rgba_texture("assets/textures/earth_topography_3840.jpg");
+    // Earth relief is decoded once and kept around: the climate model
+    // classifies ocean/land straight from the same pixels.
+    let earth_bytes = std::fs::read("assets/textures/earth_topography_3840.jpg")
+        .unwrap_or_else(|e| panic!("cannot read earth texture ({e}) — run from the repo root"));
+    let earth_rgba = image::load_from_memory(&earth_bytes)
+        .unwrap_or_else(|e| panic!("cannot decode earth texture ({e})"))
+        .to_rgba8();
+    let (ew, eh) = earth_rgba.dimensions();
+    let earth_tex = Texture2D::from_rgba8(ew as u16, eh as u16, earth_rgba.as_raw());
     let moon_tex = load_rgba_texture("assets/textures/moon_2k.jpg");
     let stars_tex = load_rgba_texture("assets/textures/stars_milky_way_2k.jpg");
     let gravity_tex = load_rgba_texture("assets/textures/gravity_anomaly.jpg");
@@ -352,6 +365,55 @@ async fn main() {
     )
     .unwrap();
 
+    // Climate overlays share one generic unlit textured shader: the air
+    // temperature map blends normally over the ground, the streak canvases
+    // (wind + current tracers) are additive glows that never occlude.
+    let tex_params = |additive: bool| MaterialParams {
+        pipeline_params: PipelineParams {
+            cull_face: CullFace::Back,
+            depth_write: !additive,
+            color_blend: Some(BlendState::new(
+                Equation::Add,
+                BlendFactor::Value(BlendValue::SourceAlpha),
+                if additive {
+                    BlendFactor::One
+                } else {
+                    BlendFactor::OneMinusValue(BlendValue::SourceAlpha)
+                },
+            )),
+            ..Default::default()
+        },
+        uniforms: vec![
+            UniformDesc::new("u_model", UniformType::Mat4),
+            UniformDesc::new("u_alpha", UniformType::Float1),
+        ],
+        textures: Vec::new(),
+    };
+    let temp_mat = load_material(
+        ShaderSource::Glsl {
+            vertex: TEX_VS,
+            fragment: TEX_FS,
+        },
+        tex_params(false),
+    )
+    .unwrap();
+    let wind_mat = load_material(
+        ShaderSource::Glsl {
+            vertex: TEX_VS,
+            fragment: TEX_FS,
+        },
+        tex_params(true),
+    )
+    .unwrap();
+    let cur_mat = load_material(
+        ShaderSource::Glsl {
+            vertex: TEX_VS,
+            fragment: TEX_FS,
+        },
+        tex_params(true),
+    )
+    .unwrap();
+
     // Additive glow shell: blends onto whatever is behind it, never occludes.
     let atmo_mat = load_material(
         ShaderSource::Glsl {
@@ -478,9 +540,34 @@ async fn main() {
     }
     .mesh(1.0, None);
 
+    // Climate layer: ocean mask straight from the relief pixels, currents
+    // solved at startup, then temperature + tracer streaks evolve per frame.
+    let mask = LandMask::from_rgba(ew, eh, earth_rgba.as_raw());
+    let mut climate = Climate::new(mask);
+    let temp_tex = Texture2D::from_rgba8(CGW as u16, CGH as u16, &climate.temp_rgba());
+    let wind_tex = Texture2D::from_rgba8(STREAK_W as u16, STREAK_H as u16, &climate.wind_rgba);
+    let cur_tex = Texture2D::from_rgba8(STREAK_W as u16, STREAK_H as u16, &climate.cur_rgba);
+    // Shell stack: currents ride just above the water (1.0005), the air
+    // temperature map over everything, wind streaks under the cloud deck.
+    let cur_mesh = SphereGrid {
+        rings: 64,
+        slices: 160,
+    }
+    .mesh(1.0006, Some(cur_tex.clone()));
+    let temp_mesh = SphereGrid {
+        rings: 64,
+        slices: 160,
+    }
+    .mesh(1.006, Some(temp_tex.clone()));
+    let wind_mesh = SphereGrid {
+        rings: 64,
+        slices: 160,
+    }
+    .mesh(1.010, Some(wind_tex.clone()));
+
     // --- simulation state ------------------------------------------------------
     // Small CLI conveniences for benchmarking/screenshots: --cpu, --tide=<km>,
-    // --clouds=off|drift, --impact=apophis|chicxulub, --no-anomaly.
+    // --clouds=off|drift, --impact=apophis|chicxulub, --no-anomaly, --temp.
     let args: Vec<String> = std::env::args().collect();
     let tide_km = args
         .iter()
@@ -508,6 +595,7 @@ async fn main() {
         .find_map(|a| a.strip_prefix("--impact="))
         .map(|s| if s == "chicxulub" { CHICXULUB } else { APHOPIS });
     let anomaly_on = !args.iter().any(|a| a == "--no-anomaly");
+    let temp_on = args.iter().any(|a| a == "--temp");
 
     let mut sim = Sim {
         running: true,
@@ -522,6 +610,9 @@ async fn main() {
         cloud_mode,
         show_atmo: true,
         show_anomaly: anomaly_on,
+        show_temp: temp_on, // over the streaks: off at launch, [t] reveals it
+        show_winds: true,
+        show_currents: true,
         cloud_drift: 0.0,
     };
     let mut cam = OrbitCam::new();
@@ -631,6 +722,15 @@ async fn main() {
         if is_key_pressed(KeyCode::V) {
             sim.show_anomaly = !sim.show_anomaly;
         }
+        if is_key_pressed(KeyCode::T) {
+            sim.show_temp = !sim.show_temp;
+        }
+        if is_key_pressed(KeyCode::W) {
+            sim.show_winds = !sim.show_winds;
+        }
+        if is_key_pressed(KeyCode::N) {
+            sim.show_currents = !sim.show_currents;
+        }
         cam.handle_input();
 
         if sim.running {
@@ -656,7 +756,9 @@ async fn main() {
             spawn_rock = pending.take();
         }
         if let Some(rock) = spawn_rock.take() {
-            let gd = earth_model.inverse().transform_vector3(cam.position().normalize());
+            let gd = earth_model
+                .inverse()
+                .transform_vector3(cam.position().normalize());
             let im = Impact::trigger(rock, gd);
             report_impact(&im);
             impact = Some(im);
@@ -692,6 +794,37 @@ async fn main() {
             }
             CloudMode::Drift => sim.cloud_drift += dt_sim as f32 * CLOUD_DRIFT_RATE,
             CloudMode::Off => {}
+        }
+
+        // Climate: the gyres are steady (the wind belts are), so psi was
+        // solved at startup; temperature relaxes toward radiative
+        // equilibrium, gets shaded by the deck and impact dust, and is
+        // advected — air by the winds, SST by the currents. The streak
+        // canvases animate both flows.
+        if dt_sim > 0.0 {
+            let sun_ground = earth_model.inverse().transform_vector3(sun_dir());
+            let mut rem = dt_sim as f32;
+            while rem > 0.0 {
+                let h = rem.min(MAX_CLOUD_STEP_S);
+                climate.step(h, sun_ground, clouds.coverage_grid(), clouds.dust);
+                rem -= h;
+            }
+            climate.step_streaks(dt_sim as f32);
+            temp_tex.update(&Image {
+                bytes: climate.temp_rgba(),
+                width: CGW as u16,
+                height: CGH as u16,
+            });
+            wind_tex.update(&Image {
+                bytes: climate.wind_rgba.clone(),
+                width: STREAK_W as u16,
+                height: STREAK_H as u16,
+            });
+            cur_tex.update(&Image {
+                bytes: climate.cur_rgba.clone(),
+                width: STREAK_W as u16,
+                height: STREAK_H as u16,
+            });
         }
 
         // ------------------------------------------------------------ render
@@ -759,6 +892,27 @@ async fn main() {
         gl_use_material(&water_mat);
         draw_mesh(&ocean.mesh);
 
+        // climate overlays, inside-out like the other shells: current
+        // streaks over the water, temperature map, wind streaks
+        if sim.show_currents {
+            cur_mat.set_uniform("u_model", earth_model);
+            cur_mat.set_uniform("u_alpha", 1.0f32);
+            gl_use_material(&cur_mat);
+            draw_mesh(&cur_mesh);
+        }
+        if sim.show_temp {
+            temp_mat.set_uniform("u_model", earth_model);
+            temp_mat.set_uniform("u_alpha", 0.8f32);
+            gl_use_material(&temp_mat);
+            draw_mesh(&temp_mesh);
+        }
+        if sim.show_winds {
+            wind_mat.set_uniform("u_model", earth_model);
+            wind_mat.set_uniform("u_alpha", 1.0f32);
+            gl_use_material(&wind_mat);
+            draw_mesh(&wind_mesh);
+        }
+
         // cloud deck — co-rotates with the ground (winds are surface-relative)
         if !matches!(sim.cloud_mode, CloudMode::Off) {
             cloud_mat.set_uniform("u_model", earth_model);
@@ -779,10 +933,7 @@ async fn main() {
         let dust = impact.as_ref().map_or(0.0, |im| im.dust());
         if dust > 0.015 {
             dust_mat.set_uniform("u_model", Mat4::IDENTITY);
-            dust_mat.set_uniform(
-                "u_color",
-                vec4(0.48, 0.37, 0.27, (dust * 0.6).min(0.55)),
-            );
+            dust_mat.set_uniform("u_color", vec4(0.48, 0.37, 0.27, (dust * 0.6).min(0.55)));
             gl_use_material(&dust_mat);
             draw_mesh(&atmo_mesh);
         }
@@ -840,10 +991,7 @@ async fn main() {
                         vec4(0.0, 0.0, 0.0, 1.0),
                     );
                 plume_mat.set_uniform("u_model", m);
-                plume_mat.set_uniform(
-                    "u_color",
-                    vec4(0.55, 0.45, 0.38, 0.65 * (1.0 - fl / 4.0)),
-                );
+                plume_mat.set_uniform("u_color", vec4(0.55, 0.45, 0.38, 0.65 * (1.0 - fl / 4.0)));
                 gl_use_material(&plume_mat);
                 draw_mesh(&glow_mesh);
             }
@@ -962,6 +1110,14 @@ async fn main() {
                 if sim.show_atmo { "on" } else { "off" }
             ),
             format!(
+                "climate: air mean {:+.0} C, poles {:+.0} C | currents jet {:.2} m/s (gyre {:.3})  heat {:.1} PW",
+                climate.air_mean,
+                climate.pole_air,
+                climate.jet_ms,
+                climate.interior_ms,
+                climate.heat_pw
+            ),
+            format!(
                 "sea anomaly colour: red = +m gain, blue = -m dip, full scale +{} / -{} m",
                 fmt_grouped(((tide_amp + wave_a0) * EARTH_RADIUS_KM * 1000.0) as u64),
                 fmt_grouped((tide_amp * 0.5 * EARTH_RADIUS_KM * 1000.0) as u64)
@@ -1014,6 +1170,7 @@ async fn main() {
                 "[space] pause  [c]/[g] cpu/gpu tide  [ / ] tide +/-25 km  [-]/[=] speed /2/x2\n\
                  [k] clouds sim/drift/off  [o] atmosphere  [m] moon  [f] tidal pull  [a] axis\n\
                  [i] Apophis impact  [u] 10-km impact  [v] gravity map  [r] reset camera  [H] hide this\n\
+                 [t] temperature map  [w] wind streaks  [n] current streaks\n\
                  drag = orbit  wheel = zoom",
                 16.0,
                 screen_height() - 94.0,

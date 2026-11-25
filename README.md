@@ -32,6 +32,7 @@ cargo run --release -- --clouds=off   # start with the cloud deck off
 cargo run --release -- --impact=apophis    # Apophis-class strike once framing settles
 cargo run --release -- --impact=chicxulub  # 10-km killer for scale
 cargo run --release -- --no-anomaly        # start with the gravity anomaly map off
+cargo run --release -- --temp              # start with the temperature overlay on
 cargo test                            # unit tests: tide math, CPU mesh, clouds, impact physics
 ```
 
@@ -49,6 +50,9 @@ cargo test                            # unit tests: tide math, CPU mesh, clouds,
 | `m` | toggle Moon |
 | `f` | toggle dashed gravity vector (Earth ← Moon) |
 | `v` | toggle the gravity anomaly map (EGM96 free-air overlay) |
+| `t` | toggle the surface temperature map (air temp, blue cold → red warm) |
+| `w` | toggle wind streaks (animated tracers in the surface wind belts) |
+| `n` | toggle ocean-current streaks (animated tracers in the gyres) |
 | `a` | toggle rotation axis + equator |
 | `i` | Apophis-class impact (340 m, 1 176 Mt) under the camera |
 | `u` | Chicxulub-class impact (10 km, ~75 Gt) under the camera |
@@ -105,6 +109,16 @@ cargo test                            # unit tests: tide math, CPU mesh, clouds,
   regions stay transparent and the terrain shows through. The baker validates
   itself: the geoid heights from the same coefficients reproduce the official
   NGA EGM96 geoid grid (WW15MGH) with correlation 0.9999.
+- **Ocean currents, winds & temperature** (`n` `w` `t`) — a CPU circulation
+  layer on the cloud grid: the wind belts drive a depth-integrated ocean gyre
+  (Sverdrup interior + narrow **western boundary jets** — the Gulf Stream and
+  Kuroshio fall out of the β term rather than hand-drawn arrows), while surface
+  air and sea-surface temperature relax toward radiative equilibrium and are
+  advected by winds and currents. Cloud shade cools the sea surface, impact
+  dust chills the whole planet. The streak canvases and temperature overlay
+  show what these flows *change*: warm western-boundary pools, a narrowed
+  equator-to-pole contrast, and the HUD prints the numbers — jet speed vs
+  gyre interior, oceanic heat transport in PW, mean and polar air temperature.
 - **Asteroid impacts** (`i` / `u`, or `--impact=`) — an Apophis-class strike
   (340 m, 6.2×10¹⁰ kg, 12.6 km/s → **1 176 Mt**, ~78 000 Hiroshimas) or a
   Chicxulub-class 10 km rock for scale. The console prints a physics briefing
@@ -152,6 +166,30 @@ computed with the fully-normalised stable recursion of Holmes & Featherstone
 ridges read positive (hot, dense mantle upwelling), deep-sea trenches negative
 (cold slab + deep water), and Hudson Bay still negative from the ice age that
 left it ~200 m of mantle depression — isostasy runs on geological time.
+
+The ocean currents solve the steady wind-driven barotropic balance
+`ν∇²ψ + β·∂ψ/∂x = curl(wind stress)` — Gauss–Seidel on a land/sea mask
+classified straight from the ETOPO pixels — with β = 2Ωcosφ/R, the
+north–south gradient of the Coriolis parameter. The interior obeys Sverdrup
+balance (meridional flow = stress curl ÷ β: a few cm/s, *equatorward* under
+the westerlies), and since β keeps its sign in both hemispheres each gyre can
+only close its circulation through a boundary layer ~ν/β wide on the *west*
+side of every basin — Stommel's western intensification. That is what makes
+western boundary currents: jets an order of magnitude faster than the
+interior, at the real basins' west edges (Gulf Stream, Kuroshio, Agulhas,
+Brazil). Advected by those jets, the SST field grows the warm pools downstream
+of each western boundary, and the heat the currents carry poleward — the HUD
+prints it — ~0.8 PW for this one-layer model once the SST has spun up,
+against the real ~1.3 PW — is what lifts the poles; the unit tests assert the
+jet structure, the downstream warming and the poleward transport, plus the
+Chicxulub case where dust blocks sunlight while the surface still radiates to
+space and the surface temperature collapses by more than 10 °C — and an
+`#[ignore]`d regression test pins the Gulf Stream, Kuroshio, California, Peru
+and Brazil currents to their real latitudes and longitudes on the real mask.
+Caveats: one
+ocean layer (no depth profile, no eddy resolution at
+1.4°), winds are idealised belts, and the land mask treats white ice sheets as
+land and pale Arctic sea ice as water.
 
 An impact is booked from order-of-magnitude scaling laws, shared by the CPU and
 GPU render paths: energy `½mv²` (Apophis: 4.9×10¹⁸ J = 1 176 Mt); transient

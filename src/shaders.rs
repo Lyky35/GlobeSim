@@ -172,6 +172,39 @@ void main() {
 }
 "#;
 
+// Generic unlit textured overlay (temperature map, current/wind streaks):
+// alpha = texel alpha * u_alpha; shell radius/blend live in the material.
+pub const TEX_VS: &str = r#"#version 100
+attribute vec3 position;
+attribute vec2 texcoord;
+attribute vec4 color0;
+attribute vec4 normal;
+
+uniform mat4 Projection;
+uniform mat4 u_model;
+
+varying vec2 v_uv;
+
+void main() {
+    v_uv = texcoord;
+    gl_Position = Projection * u_model * vec4(position, 1.0);
+}
+"#;
+
+pub const TEX_FS: &str = r#"#version 100
+precision mediump float;
+
+varying vec2 v_uv;
+
+uniform sampler2D Texture;
+uniform float u_alpha;
+
+void main() {
+    vec4 t = texture2D(Texture, v_uv);
+    gl_FragColor = vec4(t.rgb, t.a * u_alpha);
+}
+"#;
+
 // Unlit tinted shell for impact flash / plume / dust haze (u_color rgba).
 pub const GLOW_VS: &str = r#"#version 100
 attribute vec3 position;

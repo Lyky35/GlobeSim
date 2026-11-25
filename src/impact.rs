@@ -185,17 +185,32 @@ mod tests {
     fn apophis_energy_crater_and_magnitude() {
         let s = stats(&APHOPIS);
         // 6.2e10 kg at 12.6 km/s ~ 4.9e18 J ~ 1,200 Mt.
-        assert!(s.energy_j > 4.0e18 && s.energy_j < 6.0e18, "E = {}", s.energy_j);
-        assert!(s.energy_mt > 900.0 && s.energy_mt < 1400.0, "Mt = {}", s.energy_mt);
+        assert!(
+            s.energy_j > 4.0e18 && s.energy_j < 6.0e18,
+            "E = {}",
+            s.energy_j
+        );
+        assert!(
+            s.energy_mt > 900.0 && s.energy_mt < 1400.0,
+            "Mt = {}",
+            s.energy_mt
+        );
         // Literature: ~4-6 km final crater for Apophis on rock.
-        assert!(s.crater_km > 3.0 && s.crater_km < 9.0, "crater = {}", s.crater_km);
+        assert!(
+            s.crater_km > 3.0 && s.crater_km < 9.0,
+            "crater = {}",
+            s.crater_km
+        );
         // Radiated seismic (1e-4 coupling) ~ M6.6-ish.
         assert!(s.mw > 6.0 && s.mw < 7.2, "Mw = {}", s.mw);
         // Ocean punch-out: km-scale near the crater, and Chicxulub is bigger.
         assert!(s.tsunami_m > 500.0 && s.tsunami_m <= 4000.0);
         let c = stats(&CHICXULUB);
         assert!(c.crater_km > s.crater_km * 10.0);
-        assert!(c.dust0 > 0.5 && s.dust0 < 0.05, "Apophis must NOT be an impact winter");
+        assert!(
+            c.dust0 > 0.5 && s.dust0 < 0.05,
+            "Apophis must NOT be an impact winter"
+        );
     }
 
     #[test]
@@ -223,7 +238,10 @@ mod tests {
         let early = imp.wave(vec3(1.0, 0.0, 0.0)); // age 2 h
         imp.step(58800.0); // total age 16.7 h
         let late = imp.wave(vec3(1.0, 0.0, 0.0));
-        assert!(early.a0 > late.a0 * 1.5, "spreading should shrink the crest");
+        assert!(
+            early.a0 > late.a0 * 1.5,
+            "spreading should shrink the crest"
+        );
     }
 
     #[test]

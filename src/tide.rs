@@ -67,7 +67,8 @@ impl TideOcean {
     /// normals, so neighbours must wrap longitude and clamp latitude.
     fn displaced(&self, i: u32, j: u32, moon: Vec3, amp: f32, wave: Option<&WaveState>) -> Vec3 {
         let d = self.dirs[self.grid.index(i, j % self.grid.slices)];
-        let h = self.base_radius + tide_height(d.dot(moon), amp) + wave.map_or(0.0, |w| wave_h(d, w));
+        let h =
+            self.base_radius + tide_height(d.dot(moon), amp) + wave.map_or(0.0, |w| wave_h(d, w));
         d * h
     }
 
