@@ -80,6 +80,7 @@ cargo test                            # unit tests: tide math, CPU mesh, clouds,
 | `n` | toggle ocean-current streaks (animated tracers in the gyres) |
 | `tab` | cycle the selected city — its local tide graph sits top-right |
 | `b` | toggle city markers |
+| `p` | flat side panel: tide heat map → climate mirror → relief → off |
 | `a` | toggle rotation axis + equator |
 | `i` | Apophis-class impact (340 m, 1 176 Mt) under the camera |
 | `u` | Chicxulub-class impact (10 km, ~75 Gt) under the camera |
@@ -278,6 +279,7 @@ Solar System Scope Moon & Milky Way (CC BY 4.0), EGM96 gravity coefficients
 - [x] Solar tide component (spring/neap cycles)
 - [x] Moon ephemeris (real orbital elements) and an actual Sun position for day/night
 - [x] City markers + local tide-height graph
+- [x] Flat side panel ([p]): tide heat map / climate mirror / relief map
 
 ## License
 

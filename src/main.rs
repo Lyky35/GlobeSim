@@ -6,6 +6,7 @@ mod constants;
 mod dem;
 mod ephemeris;
 mod impact;
+mod panel;
 mod shaders;
 mod sphere;
 mod tide;
@@ -212,6 +213,8 @@ struct Sim {
     /// one ([Tab] cycles, [B] toggles).
     show_cities: bool,
     city_sel: usize,
+    /// Flat-map side panel: 0 tide, 1 climate, 2 relief, panel::HIDDEN off.
+    panel_mode: usize,
     /// Longitude offset for GPU cloud-drift mode (fraction of full circle).
     cloud_drift: f32,
 }
@@ -518,6 +521,10 @@ async fn main() {
     // radially out once at startup and ride the model matrix from then on.
     let dem = dem::Dem::load("assets/textures/etopo_dem.bin");
     dem::displace_land(&mut earth_mesh, &earth_grid, &dem, RELIEF_EXAGG);
+    // Flat side panel ([p]): relief is static so it bakes once next to the
+    // displaced mesh; tide/climate views redraw live.
+    let mut flat = panel::FlatPanel::new();
+    flat.bake_relief(&dem);
     let moon_mesh = SphereGrid {
         rings: 48,
         slices: 64,
@@ -633,6 +640,7 @@ async fn main() {
         show_currents: true,
         show_cities: true,
         city_sel: 0,
+        panel_mode: 0,
         cloud_drift: 0.0,
     };
     let mut cam = OrbitCam::new();
@@ -748,6 +756,9 @@ async fn main() {
         }
         if is_key_pressed(KeyCode::B) {
             sim.show_cities = !sim.show_cities;
+        }
+        if is_key_pressed(KeyCode::P) {
+            sim.panel_mode = (sim.panel_mode + 1) % (panel::HIDDEN + 1);
         }
         cam.handle_input();
 
@@ -1162,6 +1173,32 @@ async fn main() {
             );
         }
 
+        // -------------------------------------------------- flat-map side panel
+        if sim.panel_mode != panel::HIDDEN {
+            flat.refresh(sim.panel_mode, sim.sim_time, &climate);
+            let px0 = screen_width() - panel::PW as f32 - 14.0;
+            let py0 = 190.0; // under the tide graph, clear of the HUD text block
+            draw_text(panel::TITLES[sim.panel_mode], px0, py0 - 8.0, 15.0, WHITE);
+            flat.draw(px0, py0);
+            if sim.show_cities {
+                // crosshair over the selected city so graph and map agree
+                let c = &cities::CITIES[sim.city_sel];
+                let (mx, my) = panel::FlatPanel::locate(c.lat, c.lon);
+                let (mx, my) = (px0 + mx, py0 + my);
+                let cc = Color::new(1.0, 0.85, 0.3, 0.95);
+                draw_line(mx - 5.0, my, mx + 5.0, my, 1.0, cc);
+                draw_line(mx, my - 5.0, mx, my + 5.0, 1.0, cc);
+                draw_circle(mx, my, 1.6, cc);
+            }
+            draw_text(
+                "[p] switch map view",
+                px0,
+                py0 + panel::PH as f32 + 16.0,
+                15.0,
+                Color::new(0.75, 0.8, 0.9, 1.0),
+            );
+        }
+
         let mode_txt = match sim.mode {
             TideMode::Cpu => "CPU (per-vertex)",
             TideMode::Gpu => "GPU (vertex shader)",
@@ -1283,9 +1320,10 @@ async fn main() {
                  [i] Apophis impact  [u] 10-km impact  [v] gravity map  [r] reset camera  [H] hide this\n\
                  [t] temperature map  [w] wind streaks  [n] current streaks\n\
                  [b] cities on/off  [tab] next city (tide graph top-right)\n\
+                 [p] flat map panel: tide / climate / relief\n\
                  drag = orbit  wheel = zoom",
                 16.0,
-                screen_height() - 112.0,
+                screen_height() - 134.0,
                 14.0,
                 None,
                 WHITE,
