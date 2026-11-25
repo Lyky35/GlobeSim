@@ -2,6 +2,7 @@ mod atmos;
 mod camera;
 mod climate;
 mod constants;
+mod ephemeris;
 mod impact;
 mod shaders;
 mod sphere;
@@ -52,15 +53,6 @@ fn window_conf() -> macroquad::conf::Conf {
         draw_call_index_capacity: 131070,
         ..Default::default()
     }
-}
-
-fn sun_dir() -> Vec3 {
-    // Sun sits roughly behind the opening camera (azimuth ~-115 deg vs the
-    // camera's ~-174 deg), so the visible face is a brightly lit gibbous:
-    // topography and the cloud deck read well, and the tide-raising Moon
-    // (azimuth +40 deg) appears as a slim crescent, as it would in that
-    // geometry.
-    vec3(-0.862, 0.309, -0.402).normalize()
 }
 
 fn fmt_x(n: f64) -> String {
@@ -282,6 +274,8 @@ async fn main() {
             uniforms: vec![
                 UniformDesc::new("u_model", UniformType::Mat4),
                 UniformDesc::new("u_moon_dir", UniformType::Float3),
+                UniformDesc::new("u_sun_dir", UniformType::Float3),
+                UniformDesc::new("u_tide_ratio", UniformType::Float1),
                 UniformDesc::new("u_tide_amp", UniformType::Float1),
                 UniformDesc::new("u_cam_pos", UniformType::Float3),
                 UniformDesc::new("u_light_dir", UniformType::Float3),
@@ -617,14 +611,6 @@ async fn main() {
     };
     let mut cam = OrbitCam::new();
 
-    // Moon position helper (also used for the initial camera framing).
-    let moon_start = 40f32.to_radians();
-    let moon_pos_at = |t: f64| -> Vec3 {
-        let a = moon_start + (TAU * t / SIDEREAL_MONTH_S) as f32;
-        (Mat4::from_rotation_x(MOON_ORBIT_INCL_DEG.to_radians()) * Mat4::from_rotation_y(a))
-            .transform_point3(vec3(MOON_SCENE_DISTANCE, 0.0, 0.0))
-    };
-
     // Frame the view so the Moon sits beside Earth's limb at launch: put the
     // camera roughly opposite the Moon, offset by an angle that fits the
     // window's field of view (narrow windows need a smaller offset). Tiling
@@ -653,7 +639,7 @@ async fn main() {
             } else if get_time() - t_start > 2.0 {
                 framing_active = false; // window settled, stop reframing
             } else {
-                let m0 = moon_pos_at(sim.sim_time);
+                let m0 = ephemeris::moon_dir(sim.sim_time);
                 let moon_az = m0.x.atan2(m0.z);
                 let off = if screen_width() > screen_height() {
                     0.6
@@ -743,10 +729,11 @@ async fn main() {
         let tilt = Mat4::from_rotation_z(AXIAL_TILT_DEG.to_radians());
         let earth_model = tilt * Mat4::from_rotation_y(spin);
 
-        // Moon: one orbit per sidereal month in the ecliptic (XZ) plane,
-        // inclined 5.15 deg and prograde (same sense as Earth's spin).
-        let moon_pos = moon_pos_at(sim.sim_time);
-        let moon_dir = moon_pos.normalize();
+        // Sun and Moon from truncated real ephemerides: seasons, the Moon's
+        // inclined wandering, and the spring/neap beat of two tidal bulges.
+        let sun_world = ephemeris::sun_dir(sim.sim_time);
+        let moon_dir = ephemeris::moon_dir(sim.sim_time);
+        let moon_pos = moon_dir * MOON_SCENE_DISTANCE;
 
         let tide_amp = sim.tide_km / EARTH_RADIUS_KM; // scene units (1 = 1 Re)
         let dt_sim = if sim.running { dt * sim.speed } else { 0.0 };
@@ -779,7 +766,7 @@ async fn main() {
         // point then sweeps west once per sidereal day.
         match sim.cloud_mode {
             CloudMode::Sim => {
-                let sun_ground = earth_model.inverse().transform_vector3(sun_dir());
+                let sun_ground = earth_model.inverse().transform_vector3(sun_world);
                 let mut rem = dt_sim as f32;
                 while rem > 0.0 {
                     let h = rem.min(MAX_CLOUD_STEP_S);
@@ -802,7 +789,7 @@ async fn main() {
         // advected — air by the winds, SST by the currents. The streak
         // canvases animate both flows.
         if dt_sim > 0.0 {
-            let sun_ground = earth_model.inverse().transform_vector3(sun_dir());
+            let sun_ground = earth_model.inverse().transform_vector3(sun_world);
             let mut rem = dt_sim as f32;
             while rem > 0.0 {
                 let h = rem.min(MAX_CLOUD_STEP_S);
@@ -838,7 +825,7 @@ async fn main() {
 
         // earth
         earth_mat.set_uniform("u_model", earth_model);
-        earth_mat.set_uniform("u_light_dir", sun_dir());
+        earth_mat.set_uniform("u_light_dir", sun_world);
         gl_use_material(&earth_mat);
         draw_mesh(&earth_mesh);
 
@@ -846,7 +833,7 @@ async fn main() {
         // ground, transparent where the anomaly is near zero
         if sim.show_anomaly {
             gravity_mat.set_uniform("u_model", earth_model);
-            gravity_mat.set_uniform("u_light_dir", sun_dir());
+            gravity_mat.set_uniform("u_light_dir", sun_world);
             gravity_mat.set_uniform("u_alpha", 0.9f32);
             gl_use_material(&gravity_mat);
             draw_mesh(&gravity_mesh);
@@ -859,9 +846,11 @@ async fn main() {
             .as_ref()
             .map(|im| im.wave(earth_model.transform_vector3(im.ground_dir)));
         match sim.mode {
-            TideMode::Cpu => ocean.update_cpu(moon_dir, tide_amp, wave.as_ref()),
+            TideMode::Cpu => ocean.update_cpu(moon_dir, sun_world, tide_amp, wave.as_ref()),
             TideMode::Gpu => {
                 water_mat.set_uniform("u_moon_dir", moon_dir);
+                water_mat.set_uniform("u_sun_dir", sun_world);
+                water_mat.set_uniform("u_tide_ratio", SOLAR_TIDE_RATIO);
                 water_mat.set_uniform("u_tide_amp", tide_amp);
             }
         }
@@ -888,7 +877,7 @@ async fn main() {
         water_mat.set_uniform("u_anom_scale", (tide_amp + wave_a0).max(1e-4));
         water_mat.set_uniform("u_model", Mat4::IDENTITY);
         water_mat.set_uniform("u_cam_pos", cam.position());
-        water_mat.set_uniform("u_light_dir", sun_dir());
+        water_mat.set_uniform("u_light_dir", sun_world);
         gl_use_material(&water_mat);
         draw_mesh(&ocean.mesh);
 
@@ -924,7 +913,7 @@ async fn main() {
                     0.0
                 },
             );
-            cloud_mat.set_uniform("u_light_dir", sun_dir());
+            cloud_mat.set_uniform("u_light_dir", sun_world);
             gl_use_material(&cloud_mat);
             draw_mesh(&cloud_mesh);
         }
@@ -941,7 +930,7 @@ async fn main() {
         // moon
         if sim.show_moon {
             moon_mat.set_uniform("u_model", Mat4::from_translation(moon_pos));
-            moon_mat.set_uniform("u_light_dir", sun_dir());
+            moon_mat.set_uniform("u_light_dir", sun_world);
             gl_use_material(&moon_mat);
             draw_mesh(&moon_mesh);
         }
@@ -949,7 +938,7 @@ async fn main() {
         // atmospheric glow: additive rim shell drawn over the solid bodies
         if sim.show_atmo {
             atmo_mat.set_uniform("u_cam_pos", cam.position());
-            atmo_mat.set_uniform("u_light_dir", sun_dir());
+            atmo_mat.set_uniform("u_light_dir", sun_world);
             gl_use_material(&atmo_mat);
             draw_mesh(&atmo_mesh);
         }
@@ -1095,6 +1084,13 @@ async fn main() {
                 fmt_x(sim.speed)
             ),
             format!("tide: {}  mode: {}", exaggeration, mode_txt),
+            format!(
+                "sky: moon {} {:.0}% lit {:.0}k km  ·  {}",
+                ephemeris::phase_name(sim.sim_time),
+                100.0 * ephemeris::illumination(sim.sim_time),
+                ephemeris::moon_dist_km(sim.sim_time) / 1000.0,
+                ephemeris::spring_or_neap(sim.sim_time)
+            ),
             format!(
                 "high tide every ~{} real time",
                 fmt_hm(lunar_day_s / 2.0 / sim.speed)

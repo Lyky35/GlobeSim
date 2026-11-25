@@ -11,12 +11,15 @@ pub const SIDEREAL_MONTH_S: f64 = 27.321661 * 86400.0; // 2 360 592 s
 /// Earth's axial tilt (obliquity), degrees.
 pub const AXIAL_TILT_DEG: f32 = 23.44;
 
-/// The Moon's orbital inclination to the ecliptic, degrees.
-pub const MOON_ORBIT_INCL_DEG: f32 = 5.15;
-
 /// Typical amplitude of the equilibrium (astronomical) tide raised by the
 /// Moon: roughly 0.36 m. Only used to report the visual exaggeration.
 pub const EQUILIBRIUM_TIDE_M: f32 = 0.36;
+
+/// The Sun's tide-raising power relative to the Moon's (0.46: same order,
+/// because the Sun's huge distance mostly cancels its huge mass). Adding
+/// this second bulge is what produces the spring/neap cycle: bulges lined
+/// up at new/full moon -> ~1.46x; crossed at the quarters -> ~0.54x.
+pub const SOLAR_TIDE_RATIO: f32 = 0.46;
 
 /// Earth radius in km, used to convert the tide-height slider (km) into scene
 /// length units (1 unit = 1 Earth radius).

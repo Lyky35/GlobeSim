@@ -54,6 +54,8 @@ attribute vec4 normal;
 uniform mat4 Projection;
 uniform mat4 u_model;
 uniform vec3 u_moon_dir;   // direction Earth -> Moon, object space
+uniform vec3 u_sun_dir;    // direction Earth -> Sun, object space
+uniform float u_tide_ratio; // solar tide strength (~0.46 of lunar)
 uniform float u_tide_amp;  // bulge amplitude A, scene units
 uniform vec3 u_cam_pos;    // camera position, world space
 uniform vec4 u_tsu_dir;    // xyz: impact point (world); w: crest ring radius (rad)
@@ -69,7 +71,9 @@ varying float v_wave;      // tsunami crest component only
 void main() {
     vec3 dir = normalize(position);
     float cosPsi = dot(dir, u_moon_dir);
-    float tide = u_tide_amp * (1.5 * cosPsi * cosPsi - 0.5);
+    float cosSun = dot(dir, u_sun_dir);
+    float tide = u_tide_amp * (1.5 * cosPsi * cosPsi - 0.5
+                               + u_tide_ratio * (1.5 * cosSun * cosSun - 0.5));
 
     // Expanding tsunami crest: Gaussian ring at angular radius u_tsu_dir.w.
     float psi = acos(clamp(dot(dir, u_tsu_dir.xyz), -1.0, 1.0));

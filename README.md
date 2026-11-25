@@ -166,7 +166,14 @@ mean (orbital) acceleration, what's left is a *differential* (tide-generating)
 force that stretches the water into two bulges along the Earth–Moon line. The
 real equilibrium amplitude is only ~0.36 m — about 0.000006% of Earth's radius,
 invisible at planetary scale — so the sim exaggerates it and tells you by how
-much. The Moon's gravity here is kinematic (the equilibrium-tide formula), not
+much. The Sun raises a second, weaker bulge (0.46 of the Moon's tide-raising
+power — the Sun's enormous mass is mostly cancelled by its enormous distance),
+so the two bulges beat against each other: lined up at new and full moon you
+get spring tides, crossed at the quarters, neaps. Both lights are placed by
+truncated real ephemerides (Meeus' solar longitude, Brown's leading lunar
+terms), which brings the seasons and the Moon's inclined, speed-varying orbit
+along for free. The Moon's gravity here is kinematic (the equilibrium-tide
+formula), not
 an N-body integration; real ocean tides additionally involve basin resonance,
 Coriolis and friction, which produce *co-tidal* patterns rather than one smooth
 bulge. Roadmap items below include a full shallow-water solver.
@@ -252,8 +259,8 @@ Solar System Scope Moon & Milky Way (CC BY 4.0), EGM96 gravity coefficients
 - [ ] GPU *compute-shader* tide variant (vs. today's vertex-shader path) and a CPU side-thread variant
 - [ ] WASM build of the Rust app (macroquad targets the web) to replace the three.js prototype
 - [ ] Shallow-water (Laplace tidal) equations on the sphere — co-tidal points, amphidromes
-- [ ] Solar tide component (spring/neap cycles)
-- [ ] Moon ephemeris (real orbital elements) and an actual Sun position for day/night
+- [x] Solar tide component (spring/neap cycles)
+- [x] Moon ephemeris (real orbital elements) and an actual Sun position for day/night
 - [ ] City markers + local tide-height graph
 
 ## License
