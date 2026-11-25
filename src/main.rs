@@ -1300,7 +1300,9 @@ async fn main() {
         if sim.panel_mode != panel::HIDDEN {
             flat.refresh(sim.panel_mode, sim.sim_time, &climate, &sw_tide);
             let px0 = screen_width() - panel::PW as f32 - 14.0;
-            let py0 = 205.0; // under the tide graph, clear of the HUD text block
+            // sits fully below the longest HUD text run (11 lines reach
+            // y~240); the title above it must clear those lines too
+            let py0 = 266.0;
             draw_text(panel::TITLES[sim.panel_mode], px0, py0 - 8.0, 15.0, WHITE);
             flat.draw(px0, py0);
             if sim.show_cities {
