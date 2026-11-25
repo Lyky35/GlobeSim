@@ -2,6 +2,7 @@ use crate::cities;
 use crate::climate::{Climate, CGH, CGW};
 use crate::dem::Dem;
 use crate::ephemeris;
+use crate::tidesw::ShallowTide;
 use macroquad::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -13,12 +14,13 @@ use macroquad::prelude::*;
 
 pub const PW: usize = CGW; // 256
 pub const PH: usize = CGH; // 128
-pub const HIDDEN: usize = 3; // mode index meaning "panel off"
+pub const HIDDEN: usize = 4; // mode index meaning "panel off"
 
-pub const TITLES: [&str; 3] = [
+pub const TITLES: [&str; 4] = [
     "tide heat map (equilibrium, live)",
     "climate mirror: surface air temp",
     "relief: ETOPO 2022 bed topography",
+    "dynamic tide: shallow-water sim",
 ];
 
 /// Diverging white -> red/blue for signed fields (warm = positive).
@@ -59,6 +61,25 @@ fn relief_ramp(h: f32) -> (u8, u8, u8) {
         let x = ((h - 4500.0) / 3500.0).clamp(0.0, 1.0);
         let c = lerp8(210, 255, x);
         (c, c, c)
+    }
+}
+
+/// Paint the live dynamic-tide field from the shallow-water solver: the
+/// ocean's real response (amphidromes, coastal setup), land shown grey.
+pub fn fill_dyn(px: &mut [u8], sw: &ShallowTide) {
+    for i in 0..PH {
+        let lat = 90.0 - (i as f32 + 0.5) * 180.0 / PH as f32;
+        for j in 0..PW {
+            let lon = (j as f32 + 0.5) * 360.0 / PW as f32;
+            let p = (i * PW + j) * 4;
+            match sw.eta_at(lat, lon) {
+                Some(e) => {
+                    let (r, g, b) = diverge(e / 0.4);
+                    px[p..p + 4].copy_from_slice(&[r, g, b, 255]);
+                }
+                None => px[p..p + 4].copy_from_slice(&[70, 72, 80, 255]),
+            }
+        }
     }
 }
 
@@ -120,7 +141,7 @@ impl FlatPanel {
 
     /// Redraw one view into the texture (called once per frame while the
     /// panel is visible; 33k cheap samples, no allocation).
-    pub fn refresh(&mut self, mode: usize, t: f64, climate: &Climate) {
+    pub fn refresh(&mut self, mode: usize, t: f64, climate: &Climate, sw: &ShallowTide) {
         match mode {
             0 => fill_tide(&mut self.px, t),
             1 => {
@@ -133,6 +154,7 @@ impl FlatPanel {
                 }
             }
             2 => self.px[..].copy_from_slice(&self.relief_px),
+            3 => fill_dyn(&mut self.px, sw),
             _ => return,
         }
         self.tex.update(&Image {

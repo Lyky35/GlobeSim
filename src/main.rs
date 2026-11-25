@@ -10,6 +10,7 @@ mod panel;
 mod shaders;
 mod sphere;
 mod tide;
+mod tidesw;
 
 use atmos::{CloudField, GRID_H, GRID_W};
 use camera::OrbitCam;
@@ -525,6 +526,9 @@ async fn main() {
     // displaced mesh; tide/climate views redraw live.
     let mut flat = panel::FlatPanel::new();
     flat.bake_relief(&dem);
+    // Dynamic ocean: linear shallow-water tides on the climate grid with
+    // real bathymetry, marched alongside sim time (panel view [p] -> 4th).
+    let mut sw_tide = tidesw::ShallowTide::new(&dem);
     let moon_mesh = SphereGrid {
         rings: 48,
         slices: 64,
@@ -780,6 +784,10 @@ async fn main() {
 
         let tide_amp = sim.tide_km / EARTH_RADIUS_KM; // scene units (1 = 1 Re)
         let dt_sim = if sim.running { dt * sim.speed } else { 0.0 };
+
+        if dt_sim > 0.0 {
+            sw_tide.advance(dt_sim as f32, earth_model, moon_dir, sun_world);
+        }
 
         // Impacts: keys i/u queue one; a CLI --impact fires once framing ends.
         if pending.is_some() && get_time() - t_start > 2.4 {
@@ -1173,32 +1181,6 @@ async fn main() {
             );
         }
 
-        // -------------------------------------------------- flat-map side panel
-        if sim.panel_mode != panel::HIDDEN {
-            flat.refresh(sim.panel_mode, sim.sim_time, &climate);
-            let px0 = screen_width() - panel::PW as f32 - 14.0;
-            let py0 = 190.0; // under the tide graph, clear of the HUD text block
-            draw_text(panel::TITLES[sim.panel_mode], px0, py0 - 8.0, 15.0, WHITE);
-            flat.draw(px0, py0);
-            if sim.show_cities {
-                // crosshair over the selected city so graph and map agree
-                let c = &cities::CITIES[sim.city_sel];
-                let (mx, my) = panel::FlatPanel::locate(c.lat, c.lon);
-                let (mx, my) = (px0 + mx, py0 + my);
-                let cc = Color::new(1.0, 0.85, 0.3, 0.95);
-                draw_line(mx - 5.0, my, mx + 5.0, my, 1.0, cc);
-                draw_line(mx, my - 5.0, mx, my + 5.0, 1.0, cc);
-                draw_circle(mx, my, 1.6, cc);
-            }
-            draw_text(
-                "[p] switch map view",
-                px0,
-                py0 + panel::PH as f32 + 16.0,
-                15.0,
-                Color::new(0.75, 0.8, 0.9, 1.0),
-            );
-        }
-
         let mode_txt = match sim.mode {
             TideMode::Cpu => "CPU (per-vertex)",
             TideMode::Gpu => "GPU (vertex shader)",
@@ -1313,6 +1295,42 @@ async fn main() {
         for (i, line) in lines.iter().enumerate() {
             draw_text(line, 16.0, 20.0 + 22.0 * i as f32, 15.0, WHITE);
         }
+
+        // -------------------------------------------------- flat-map side panel
+        if sim.panel_mode != panel::HIDDEN {
+            flat.refresh(sim.panel_mode, sim.sim_time, &climate, &sw_tide);
+            let px0 = screen_width() - panel::PW as f32 - 14.0;
+            let py0 = 205.0; // under the tide graph, clear of the HUD text block
+            draw_text(panel::TITLES[sim.panel_mode], px0, py0 - 8.0, 15.0, WHITE);
+            flat.draw(px0, py0);
+            if sim.show_cities {
+                // crosshair over the selected city so graph and map agree
+                let c = &cities::CITIES[sim.city_sel];
+                let (mx, my) = panel::FlatPanel::locate(c.lat, c.lon);
+                let (mx, my) = (px0 + mx, py0 + my);
+                let cc = Color::new(1.0, 0.85, 0.3, 0.95);
+                draw_line(mx - 5.0, my, mx + 5.0, my, 1.0, cc);
+                draw_line(mx, my - 5.0, mx, my + 5.0, 1.0, cc);
+                draw_circle(mx, my, 1.6, cc);
+            }
+            let cap = if sim.panel_mode == 3 {
+                format!(
+                    "[p] next view · {} d spun up, max ±{:.0} cm",
+                    sw_tide.steps as f64 * tidesw::DW_DT as f64 / 86400.0,
+                    sw_tide.max_abs() * 100.0
+                )
+            } else {
+                "[p] switch map view".to_string()
+            };
+            draw_text(
+                &cap,
+                px0,
+                py0 + panel::PH as f32 + 16.0,
+                15.0,
+                Color::new(0.75, 0.8, 0.9, 1.0),
+            );
+        }
+
         if sim.show_help {
             draw_multiline_text(
                 "[space] pause  [c]/[g] cpu/gpu tide  [ / ] tide +/-25 km  [-]/[=] speed /2/x2\n\
@@ -1320,7 +1338,7 @@ async fn main() {
                  [i] Apophis impact  [u] 10-km impact  [v] gravity map  [r] reset camera  [H] hide this\n\
                  [t] temperature map  [w] wind streaks  [n] current streaks\n\
                  [b] cities on/off  [tab] next city (tide graph top-right)\n\
-                 [p] flat map panel: tide / climate / relief\n\
+                 [p] flat map panel: equilibrium / climate / relief / dynamic\n\
                  drag = orbit  wheel = zoom",
                 16.0,
                 screen_height() - 134.0,

@@ -80,7 +80,7 @@ cargo test                            # unit tests: tide math, CPU mesh, clouds,
 | `n` | toggle ocean-current streaks (animated tracers in the gyres) |
 | `tab` | cycle the selected city — its local tide graph sits top-right |
 | `b` | toggle city markers |
-| `p` | flat side panel: tide heat map → climate mirror → relief → off |
+| `p` | flat side panel: tide → climate → relief → dynamic shallow-water → off |
 | `a` | toggle rotation axis + equator |
 | `i` | Apophis-class impact (340 m, 1 176 Mt) under the camera |
 | `u` | Chicxulub-class impact (10 km, ~75 Gt) under the camera |
@@ -179,7 +179,8 @@ along for free. The Moon's gravity here is kinematic (the equilibrium-tide
 formula), not
 an N-body integration; real ocean tides additionally involve basin resonance,
 Coriolis and friction, which produce *co-tidal* patterns rather than one smooth
-bulge. Roadmap items below include a full shallow-water solver.
+bulge. GlobeSim solves that dynamic response too — see the shallow-water panel
+below.
 
 The cloud deck runs a miniature general circulation: a surface wind field
 (trade easterlies at ±15°, westerlies at ±47°, a Hadley/Ferrel meridional cell)
@@ -215,6 +216,22 @@ sign is tied to the ephemeris handedness, which makes the synodic days
 emergent properties rather than constants: a 24.00 h solar day and a ~24 h 50 m
 lunar day (a unit test solves the real lunar day numerically from the Moon's
 azimuth drift and asserts it lands there).
+
+The fourth panel view ([p] → dynamic) abandons the equilibrium bulge and instead
+integrates the *linear shallow-water (Laplace tidal) equations* on the sphere:
+momentum `∂u/∂t = -g∇(η+ζ) + f×u - ru` and continuity `∂η/∂t + ∇·(H u) = 0`,
+with the analytic tidal potential ζ as forcing, real ETOPO depth `H`, planetary
+vorticity `f = 2Ω sinφ`, and a light bottom friction `r`. It runs as an A-grid
+RK2 (Heun) marcher — plain forward-backward on an A-grid is unstable — at a 120 s
+step held inside the gravity-wave CFL by capping the poles at ±77.5° (the zonal
+cell shrinks like cosφ), with land as a reflecting closed boundary and a global
+mass fixer. Marched alongside sim time it spins up (in ~1 min real time at the
+default speed) from nothing into a genuine co-tidal field: amphidromes where the
+wave turns, coastal wave setup, spring/neap modulation — none of it hard-wired.
+Unit tests assert it stays finite and bounded under four days of forcing, that a
+strong open-ocean cell crosses zero 2–4 times per day (a real semidiurnal wave,
+not a frozen bulge), that friction only ever removes energy, and that the polar
+cap carries no flow.
 
 The ocean currents solve the steady wind-driven barotropic balance
 `ν∇²ψ + β·∂ψ/∂x = curl(wind stress)` — Gauss–Seidel on a land/sea mask
@@ -275,7 +292,7 @@ Solar System Scope Moon & Milky Way (CC BY 4.0), EGM96 gravity coefficients
 - [x] Real DEM displacement of the land sphere (ETOPO grid -> bump/displacement map)
 - [ ] GPU *compute-shader* tide variant (vs. today's vertex-shader path) and a CPU side-thread variant
 - [ ] WASM build of the Rust app (macroquad targets the web) to replace the three.js prototype
-- [ ] Shallow-water (Laplace tidal) equations on the sphere — co-tidal points, amphidromes
+- [x] Shallow-water (Laplace tidal) equations on the sphere — co-tidal points, amphidromes
 - [x] Solar tide component (spring/neap cycles)
 - [x] Moon ephemeris (real orbital elements) and an actual Sun position for day/night
 - [x] City markers + local tide-height graph
