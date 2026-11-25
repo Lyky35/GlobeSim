@@ -199,6 +199,12 @@ ridges read positive (hot, dense mantle upwelling), deep-sea trenches negative
 (cold slab + deep water), and Hudson Bay still negative from the ice age that
 left it ~200 m of mantle depression — isostasy runs on geological time.
 
+Land relief is real too: the land sphere's vertices are displaced radially by
+the ETOPO 2022 1-arc-minute bed topography (decimated to 0.5° and baked by
+`tools/bake_dem.rs`), exaggerated ×15 so Everest lifts ~85 km in scene units —
+still dwarfed by the radius, which is why the real Earth looks this smooth
+from orbit. The displacement is static, baked into the mesh once at startup.
+
 The ocean currents solve the steady wind-driven barotropic balance
 `ν∇²ψ + β·∂ψ/∂x = curl(wind stress)` — Gauss–Seidel on a land/sea mask
 classified straight from the ETOPO pixels — with β = 2Ωcosφ/R, the
@@ -255,7 +261,7 @@ Solar System Scope Moon & Milky Way (CC BY 4.0), EGM96 gravity coefficients
 
 ## Roadmap
 
-- [ ] Real DEM displacement of the land sphere (ETOPO grid -> bump/displacement map)
+- [x] Real DEM displacement of the land sphere (ETOPO grid -> bump/displacement map)
 - [ ] GPU *compute-shader* tide variant (vs. today's vertex-shader path) and a CPU side-thread variant
 - [ ] WASM build of the Rust app (macroquad targets the web) to replace the three.js prototype
 - [ ] Shallow-water (Laplace tidal) equations on the sphere — co-tidal points, amphidromes

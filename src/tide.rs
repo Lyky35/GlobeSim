@@ -33,8 +33,7 @@ pub fn tide_height(cos_psi: f32, amplitude: f32) -> f32 {
 /// bulge. Where the two add (new/full moon) spring tides peak; where they
 /// cross (quarters) neap tides flatten out.
 pub fn tide_height2(cos_moon: f32, cos_sun: f32, amplitude: f32) -> f32 {
-    tide_height(cos_moon, amplitude)
-        + SOLAR_TIDE_RATIO * tide_height(cos_sun, amplitude)
+    tide_height(cos_moon, amplitude) + SOLAR_TIDE_RATIO * tide_height(cos_sun, amplitude)
 }
 
 pub enum TideMode {
@@ -127,7 +126,13 @@ impl TideOcean {
                 };
                 let dv = self.displaced(i1, j, moon, sun, amp, wave)
                     - self.displaced(i0, j, moon, sun, amp, wave);
-                let mut n = du.cross(dv).normalize();
+                // Pole rows collapse du to zero (all vertices coincide), so
+                // the cross product degenerates there: use the radial cap.
+                let mut n = if i == 0 || i == grid.rings {
+                    self.dirs[idx]
+                } else {
+                    du.cross(dv).normalize()
+                };
                 if n.dot(self.dirs[idx]) < 0.0 {
                     n = -n;
                 }

@@ -2,6 +2,7 @@ mod atmos;
 mod camera;
 mod climate;
 mod constants;
+mod dem;
 mod ephemeris;
 mod impact;
 mod shaders;
@@ -487,13 +488,19 @@ async fn main() {
     .unwrap();
 
     // --- geometry -------------------------------------------------------------
-    // 64 x 160 grid -> 61 440 indices: under one u16 draw call, still 10 400
-    // vertices for the CPU tide pass (matches the web prototype's vertex count).
+    // 96 x 192 grid -> 18 624 vertices, 110 592 indices in one u16-valued
+    // batch (window_conf's raised capacity covers it). Fine enough that the
+    // baked ETOPO relief reads as mountain ranges, not lumpy noise.
     let earth_grid = SphereGrid {
-        rings: 64,
-        slices: 160,
+        rings: 96,
+        slices: 192,
     };
-    let earth_mesh = earth_grid.mesh(1.0, Some(earth_tex));
+    let mut earth_mesh = earth_grid.mesh(1.0, Some(earth_tex));
+
+    // Real land relief (increment: ETOPO 2022): land vertices are pushed
+    // radially out once at startup and ride the model matrix from then on.
+    let dem = dem::Dem::load("assets/textures/etopo_dem.bin");
+    dem::displace_land(&mut earth_mesh, &earth_grid, &dem, RELIEF_EXAGG);
     let moon_mesh = SphereGrid {
         rings: 48,
         slices: 64,
@@ -1090,6 +1097,11 @@ async fn main() {
                 100.0 * ephemeris::illumination(sim.sim_time),
                 ephemeris::moon_dist_km(sim.sim_time) / 1000.0,
                 ephemeris::spring_or_neap(sim.sim_time)
+            ),
+            format!(
+                "relief: real ETOPO DEM, {} (peak {:.0} km)",
+                fmt_x(RELIEF_EXAGG as f64),
+                dem.max_m() * 1e-3 * RELIEF_EXAGG
             ),
             format!(
                 "high tide every ~{} real time",

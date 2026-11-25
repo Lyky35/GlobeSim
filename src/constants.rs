@@ -15,6 +15,12 @@ pub const AXIAL_TILT_DEG: f32 = 23.44;
 /// Moon: roughly 0.36 m. Only used to report the visual exaggeration.
 pub const EQUILIBRIUM_TIDE_M: f32 = 0.36;
 
+/// Vertical exaggeration applied to real ETOPO land relief. At x15 the
+/// highest ~0.5-deg box-mean heights (~5.7 km) lift ~85 km in scene units:
+/// readably mountainous from orbit, with the grand ranges poking through
+/// the (also exaggerated) cloud deck, much as orographic clouds break.
+pub const RELIEF_EXAGG: f32 = 15.0;
+
 /// The Sun's tide-raising power relative to the Moon's (0.46: same order,
 /// because the Sun's huge distance mostly cancels its huge mass). Adding
 /// this second bulge is what produces the spring/neap cycle: bulges lined
