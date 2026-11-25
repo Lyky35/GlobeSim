@@ -127,6 +127,51 @@ void main() {
 }
 "#;
 
+// Gravity anomaly overlay: EGM96 sea-level free-air map wrapped onto a shell
+// just above the ground. Alpha follows the colormap's colour saturation, so
+// near-zero anomalies stay transparent and only the strong features paint.
+pub const GRAVITY_VS: &str = r#"#version 100
+attribute vec3 position;
+attribute vec2 texcoord;
+attribute vec4 color0;
+attribute vec4 normal;
+
+uniform mat4 Projection;
+uniform mat4 u_model;
+
+varying vec2 v_uv;
+varying vec3 v_normal;
+
+void main() {
+    v_uv = texcoord;
+    v_normal = normalize((u_model * vec4(normal.xyz, 0.0)).xyz);
+    gl_Position = Projection * u_model * vec4(position, 1.0);
+}
+"#;
+
+pub const GRAVITY_FS: &str = r#"#version 100
+precision mediump float;
+
+varying vec2 v_uv;
+varying vec3 v_normal;
+
+uniform sampler2D Texture;
+uniform vec3 u_light_dir;
+uniform float u_alpha;
+
+void main() {
+    vec4 tex = texture2D(Texture, v_uv);
+    float lambert = max(dot(normalize(v_normal), u_light_dir), 0.0);
+    // The baker's diverging colormap grows more colourful with anomaly
+    // strength; channel spread measures that strength without decoding it.
+    float mx = max(max(tex.r, tex.g), tex.b);
+    float mn = min(min(tex.r, tex.g), tex.b);
+    float a = u_alpha * smoothstep(0.04, 0.35, mx - mn);
+    vec3 c = tex.rgb * (0.25 + 0.85 * lambert);
+    gl_FragColor = vec4(c, a);
+}
+"#;
+
 // Unlit tinted shell for impact flash / plume / dust haze (u_color rgba).
 pub const GLOW_VS: &str = r#"#version 100
 attribute vec3 position;

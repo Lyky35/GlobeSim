@@ -19,8 +19,8 @@ use sphere::SphereGrid;
 use tide::{TideMode, TideOcean};
 
 use shaders::{
-    ATMO_FS, ATMO_VS, CLOUD_FS, CLOUD_VS, GLOW_FS, GLOW_VS, LAMBERT_FS, LAMBERT_VS, SKY_FS,
-    SKY_VS, WATER_FS, WATER_VS,
+    ATMO_FS, ATMO_VS, CLOUD_FS, CLOUD_VS, GLOW_FS, GLOW_VS, GRAVITY_FS, GRAVITY_VS, LAMBERT_FS,
+    LAMBERT_VS, SKY_FS, SKY_VS, WATER_FS, WATER_VS,
 };
 
 pub enum CloudMode {
@@ -45,8 +45,9 @@ fn window_conf() -> macroquad::conf::Conf {
         },
         // macroquad batches geometry into single draw calls; its defaults
         // (10k verts / 5k indices) are far below one u16 batch, so raise them.
+        // The anomaly shell needs ~86k indices (index *values* still fit u16).
         draw_call_vertex_capacity: 65535,
-        draw_call_index_capacity: 65535,
+        draw_call_index_capacity: 131070,
         ..Default::default()
     }
 }
@@ -195,6 +196,7 @@ struct Sim {
     show_help: bool,
     cloud_mode: CloudMode,
     show_atmo: bool,
+    show_anomaly: bool,
     /// Longitude offset for GPU cloud-drift mode (fraction of full circle).
     cloud_drift: f32,
 }
@@ -207,6 +209,7 @@ async fn main() {
     let earth_tex = load_rgba_texture("assets/textures/earth_topography_3840.jpg");
     let moon_tex = load_rgba_texture("assets/textures/moon_2k.jpg");
     let stars_tex = load_rgba_texture("assets/textures/stars_milky_way_2k.jpg");
+    let gravity_tex = load_rgba_texture("assets/textures/gravity_anomaly.jpg");
 
     // --- materials ----------------------------------------------------------
     let lambert_params = |extra: Vec<UniformDesc>| MaterialParams {
@@ -274,6 +277,33 @@ async fn main() {
                 UniformDesc::new("u_gpu", UniformType::Float1),
                 UniformDesc::new("u_base_r", UniformType::Float1),
                 UniformDesc::new("u_anom_scale", UniformType::Float1),
+            ],
+            textures: Vec::new(),
+        },
+    )
+    .unwrap();
+
+    // Gravity anomaly overlay: alpha-blended shell just above the ground
+    // (radius set on the mesh), co-rotating with the earth.
+    let gravity_mat = load_material(
+        ShaderSource::Glsl {
+            vertex: GRAVITY_VS,
+            fragment: GRAVITY_FS,
+        },
+        MaterialParams {
+            pipeline_params: PipelineParams {
+                cull_face: CullFace::Back,
+                color_blend: Some(BlendState::new(
+                    Equation::Add,
+                    BlendFactor::Value(BlendValue::SourceAlpha),
+                    BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
+                )),
+                ..Default::default()
+            },
+            uniforms: vec![
+                UniformDesc::new("u_model", UniformType::Mat4),
+                UniformDesc::new("u_light_dir", UniformType::Float3),
+                UniformDesc::new("u_alpha", UniformType::Float1),
             ],
             textures: Vec::new(),
         },
@@ -434,6 +464,14 @@ async fn main() {
         slices: 64,
     }
     .mesh(ATMO_SHELL_RADIUS, None);
+    // Anomaly shell: sits between ground (1.0) and water (1.0005); finer grid
+    // than the earth so the 1440x720 anomaly texture stays crisp. 81 x 181
+    // verts, 86 400 indices — fits the raised draw-call capacities above.
+    let gravity_mesh = SphereGrid {
+        rings: 80,
+        slices: 180,
+    }
+    .mesh(1.0003, Some(gravity_tex));
     let glow_mesh = SphereGrid {
         rings: 16,
         slices: 32,
@@ -442,7 +480,7 @@ async fn main() {
 
     // --- simulation state ------------------------------------------------------
     // Small CLI conveniences for benchmarking/screenshots: --cpu, --tide=<km>,
-    // --clouds=off|drift, --impact=apophis|chicxulub.
+    // --clouds=off|drift, --impact=apophis|chicxulub, --no-anomaly.
     let args: Vec<String> = std::env::args().collect();
     let tide_km = args
         .iter()
@@ -469,6 +507,7 @@ async fn main() {
         .iter()
         .find_map(|a| a.strip_prefix("--impact="))
         .map(|s| if s == "chicxulub" { CHICXULUB } else { APHOPIS });
+    let anomaly_on = !args.iter().any(|a| a == "--no-anomaly");
 
     let mut sim = Sim {
         running: true,
@@ -482,6 +521,7 @@ async fn main() {
         show_help: true,
         cloud_mode,
         show_atmo: true,
+        show_anomaly: anomaly_on,
         cloud_drift: 0.0,
     };
     let mut cam = OrbitCam::new();
@@ -588,6 +628,9 @@ async fn main() {
         if is_key_pressed(KeyCode::U) {
             spawn_rock = Some(CHICXULUB);
         }
+        if is_key_pressed(KeyCode::V) {
+            sim.show_anomaly = !sim.show_anomaly;
+        }
         cam.handle_input();
 
         if sim.running {
@@ -665,6 +708,16 @@ async fn main() {
         earth_mat.set_uniform("u_light_dir", sun_dir());
         gl_use_material(&earth_mat);
         draw_mesh(&earth_mesh);
+
+        // gravity anomaly map — EGM96 free-air overlay, co-rotating with the
+        // ground, transparent where the anomaly is near zero
+        if sim.show_anomaly {
+            gravity_mat.set_uniform("u_model", earth_model);
+            gravity_mat.set_uniform("u_light_dir", sun_dir());
+            gravity_mat.set_uniform("u_alpha", 0.9f32);
+            gl_use_material(&gravity_mat);
+            draw_mesh(&gravity_mesh);
+        }
 
         // ocean — CPU pass displaces the mesh in Rust, GPU pass in the shader;
         // both fold in the tsunami crest ring, both feed the red/blue anomaly
@@ -926,6 +979,12 @@ async fn main() {
                 }
             ),
         ];
+        if sim.show_anomaly {
+            lines.push(
+                "gravity anomaly: EGM96 free-air, red + / blue - mGal, clear near 0, full scale +/-120"
+                    .to_string(),
+            );
+        }
         if let Some(im) = &impact {
             let s = &im.stats;
             lines.push(format!(
@@ -953,8 +1012,8 @@ async fn main() {
         if sim.show_help {
             draw_multiline_text(
                 "[space] pause  [c]/[g] cpu/gpu tide  [ / ] tide +/-25 km  [-]/[=] speed /2/x2\n\
-                 [k] clouds sim/drift/off  [o] atmosphere  [m] moon  [f] gravity  [a] axis\n\
-                 [i] Apophis impact  [u] 10-km impact  [r] reset camera  [H] hide this\n\
+                 [k] clouds sim/drift/off  [o] atmosphere  [m] moon  [f] tidal pull  [a] axis\n\
+                 [i] Apophis impact  [u] 10-km impact  [v] gravity map  [r] reset camera  [H] hide this\n\
                  drag = orbit  wheel = zoom",
                 16.0,
                 screen_height() - 94.0,

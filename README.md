@@ -31,6 +31,7 @@ cargo run --release -- --tide=600     # start with a 600 km bulge
 cargo run --release -- --clouds=off   # start with the cloud deck off
 cargo run --release -- --impact=apophis    # Apophis-class strike once framing settles
 cargo run --release -- --impact=chicxulub  # 10-km killer for scale
+cargo run --release -- --no-anomaly        # start with the gravity anomaly map off
 cargo test                            # unit tests: tide math, CPU mesh, clouds, impact physics
 ```
 
@@ -47,6 +48,7 @@ cargo test                            # unit tests: tide math, CPU mesh, clouds,
 | `o` | atmosphere (scattering glow shell) on/off |
 | `m` | toggle Moon |
 | `f` | toggle dashed gravity vector (Earth ← Moon) |
+| `v` | toggle the gravity anomaly map (EGM96 free-air overlay) |
 | `a` | toggle rotation axis + equator |
 | `i` | Apophis-class impact (340 m, 1 176 Mt) under the camera |
 | `u` | Chicxulub-class impact (10 km, ~75 Gt) under the camera |
@@ -90,6 +92,19 @@ cargo test                            # unit tests: tide math, CPU mesh, clouds,
   paths: the GPU shader colours `tide + tsunami` straight from the formula, the
   CPU pass reads the anomaly back off the displaced mesh. The HUD prints the
   full-scale value in metres.
+- **Gravity anomaly map** (`v`, on by default) — Earth's *own* gravity field
+  painted over the globe: a 1440×720 texture baked offline by a standalone Rust
+  program that synthesises the sea-level (free-air) gravity anomaly from the
+  full **degree-360 EGM96** spherical-harmonic model (EGM96 + CORRCOEF, public
+  domain, distributed by GeographicLib) using the Holmes & Featherstone
+  fully-normalised Legendre recursion — the same algorithm as GeographicLib's
+  `SphericalEngine` — evaluated on the WGS84 ellipsoid. Diverging colormap at
+  ±120 mGal: **red = stronger gravity** (mid-ocean ridges, island arcs, the
+  Himalayan mass excess), **blue = weaker** (ocean trenches, the Hudson Bay
+  glacial-isostatic low); overlay alpha tracks colour saturation, so near-zero
+  regions stay transparent and the terrain shows through. The baker validates
+  itself: the geoid heights from the same coefficients reproduce the official
+  NGA EGM96 geoid grid (WW15MGH) with correlation 0.9999.
 - **Asteroid impacts** (`i` / `u`, or `--impact=`) — an Apophis-class strike
   (340 m, 6.2×10¹⁰ kg, 12.6 km/s → **1 176 Mt**, ~78 000 Hiroshimas) or a
   Chicxulub-class 10 km rock for scale. The console prints a physics briefing
@@ -127,6 +142,17 @@ implements `-v·∇c` but not the `-c∇·v` compression term (the wind field is
 divergence-free), so a global mass fixer restores the conserved total each
 step — the same trick real GCMs use.
 
+The gravity anomaly texture solves the *forward* problem of geodesy: given the
+full Earth gravity field as spherical harmonics (EGM96: 65 341 coefficients to
+degree/order 360, i.e. features down to ~110 km), the sea-level gravity
+anomaly is `Δg(φ,λ) = (1/R)·Σₙ (n−1)·(GM/a)·(a/r)ⁿ⁺¹·Σₘ P̄ₙₘ(sin φ′)·[Cₙₘ cos mλ + Sₙₘ sin mλ]`
+evaluated on the ellipsoid — the radial derivative of the disturbing potential,
+computed with the fully-normalised stable recursion of Holmes & Featherstone
+(2002) and WGS84 normal-gravity subtraction. What it shows is geology: mid-ocean
+ridges read positive (hot, dense mantle upwelling), deep-sea trenches negative
+(cold slab + deep water), and Hudson Bay still negative from the ice age that
+left it ~200 m of mantle depression — isostasy runs on geological time.
+
 An impact is booked from order-of-magnitude scaling laws, shared by the CPU and
 GPU render paths: energy `½mv²` (Apophis: 4.9×10¹⁸ J = 1 176 Mt); transient
 crater diameter from Collins et al. (2005) gravity-regime scaling
@@ -158,7 +184,8 @@ redirects to `web/`).
 ## Texture credits
 
 See [CREDITS.md](CREDITS.md). TL;DR: NOAA ETOPO relief (public domain),
-Solar System Scope Moon & Milky Way (CC BY 4.0).
+Solar System Scope Moon & Milky Way (CC BY 4.0), EGM96 gravity coefficients
+(public domain, via GeographicLib).
 
 ## Roadmap
 
