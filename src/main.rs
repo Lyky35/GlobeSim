@@ -1,5 +1,6 @@
 mod atmos;
 mod camera;
+mod cities;
 mod climate;
 mod constants;
 mod dem;
@@ -14,6 +15,7 @@ use camera::OrbitCam;
 use climate::{Climate, LandMask, CGH, CGW, STREAK_H, STREAK_W};
 use constants::*;
 use impact::{Impact, Impactor, APHOPIS, CHICXULUB, TSUNAMI_C_M_S};
+use macroquad::camera::Camera;
 use macroquad::miniquad::{
     BlendFactor, BlendState, BlendValue, CullFace, Equation, PipelineParams, ShaderSource,
     UniformDesc, UniformType,
@@ -35,8 +37,6 @@ pub enum CloudMode {
     Off,
 }
 
-const TAU: f64 = std::f64::consts::TAU;
-
 fn window_conf() -> macroquad::conf::Conf {
     macroquad::conf::Conf {
         miniquad_conf: macroquad::miniquad::conf::Conf {
@@ -54,6 +54,19 @@ fn window_conf() -> macroquad::conf::Conf {
         draw_call_index_capacity: 131070,
         ..Default::default()
     }
+}
+
+/// World-space point -> screen pixels under a 3D camera (macroquad's own
+/// MVP matrix); None when the point is behind the near plane.
+fn project_point(cam: &Camera3D, p: Vec3) -> Option<(f32, f32)> {
+    let clip = Camera::matrix(cam) * vec4(p.x, p.y, p.z, 1.0);
+    if clip.w <= 0.0 {
+        return None;
+    }
+    Some((
+        (clip.x / clip.w * 0.5 + 0.5) * screen_width(),
+        (0.5 - clip.y / clip.w * 0.5) * screen_height(),
+    ))
 }
 
 fn fmt_x(n: f64) -> String {
@@ -195,6 +208,10 @@ struct Sim {
     show_temp: bool,
     show_winds: bool,
     show_currents: bool,
+    /// City markers on the globe + the local tide graph for the selected
+    /// one ([Tab] cycles, [B] toggles).
+    show_cities: bool,
+    city_sel: usize,
     /// Longitude offset for GPU cloud-drift mode (fraction of full circle).
     cloud_drift: f32,
 }
@@ -614,6 +631,8 @@ async fn main() {
         show_temp: temp_on, // over the streaks: off at launch, [t] reveals it
         show_winds: true,
         show_currents: true,
+        show_cities: true,
+        city_sel: 0,
         cloud_drift: 0.0,
     };
     let mut cam = OrbitCam::new();
@@ -724,6 +743,12 @@ async fn main() {
         if is_key_pressed(KeyCode::N) {
             sim.show_currents = !sim.show_currents;
         }
+        if is_key_pressed(KeyCode::Tab) {
+            sim.city_sel = (sim.city_sel + 1) % cities::CITIES.len();
+        }
+        if is_key_pressed(KeyCode::B) {
+            sim.show_cities = !sim.show_cities;
+        }
         cam.handle_input();
 
         if sim.running {
@@ -731,10 +756,10 @@ async fn main() {
         }
 
         // ------------------------------------------------------------ physics
-        // Earth: one turn per sidereal day, tilted 23.44 deg around world Z.
-        let spin = (TAU * sim.sim_time / SIDEREAL_DAY_S) as f32;
+        // Earth: one turn per sidereal day, tilted 23.44 deg around world Z
+        // (formula shared with the city tide sampler).
         let tilt = Mat4::from_rotation_z(AXIAL_TILT_DEG.to_radians());
-        let earth_model = tilt * Mat4::from_rotation_y(spin);
+        let earth_model = cities::earth_model_at(sim.sim_time);
 
         // Sun and Moon from truncated real ephemerides: seasons, the Moon's
         // inclined wandering, and the spring/neap beat of two tidal bulges.
@@ -1059,6 +1084,84 @@ async fn main() {
 
         // ---------------------------------------------------------------- HUD
         set_default_camera();
+
+        // ------------------------------------------- city markers + tide graph
+        if sim.show_cities {
+            let cam_pos = cam3d.position;
+            for (k, c) in cities::CITIES.iter().enumerate() {
+                let d = earth_model.transform_vector3(cities::ground_dir(c.lat, c.lon));
+                let p = d * 1.006;
+                if d.dot((cam_pos - p).normalize()) <= 0.02 {
+                    continue; // on the far side of the globe
+                }
+                let Some((sx, sy)) = project_point(&cam3d, p) else {
+                    continue;
+                };
+                if k == sim.city_sel {
+                    draw_circle(sx, sy, 4.0, Color::new(1.0, 0.85, 0.3, 0.95));
+                    draw_circle_lines(sx, sy, 8.0, 1.5, Color::new(1.0, 0.85, 0.3, 0.95));
+                    draw_text(
+                        c.name,
+                        sx + 11.0,
+                        sy - 6.0,
+                        15.0,
+                        Color::new(1.0, 0.9, 0.6, 1.0),
+                    );
+                } else {
+                    draw_circle(sx, sy, 2.2, Color::new(0.9, 0.95, 1.0, 0.9));
+                }
+            }
+
+            // 24 h equilibrium-tide window centred on now, resampled live
+            // from the ephemerides (closed form, so no history buffer).
+            let city = &cities::CITIES[sim.city_sel];
+            let now_h = cities::tide_at(city, sim.sim_time);
+            let span = 24.0 * 3600.0;
+            let series = cities::tide_series(city, sim.sim_time - span * 0.5, span, 121);
+            let gw = 250.0f32;
+            let gh = 84.0f32;
+            let gx = screen_width() - gw - 16.0;
+            let gy = 22.0;
+            draw_rectangle(gx, gy, gw, gh, Color::new(0.01, 0.02, 0.06, 0.62));
+            draw_rectangle_lines(gx, gy, gw, gh, 1.0, Color::new(0.45, 0.55, 0.8, 0.8));
+            let half = 0.62f32; // full scale, metres
+            let zero = gy + gh * 0.5;
+            draw_line(
+                gx,
+                zero,
+                gx + gw,
+                zero,
+                1.0,
+                Color::new(0.4, 0.45, 0.6, 0.7),
+            );
+            let py = |h: f32| zero - (h / half).clamp(-1.0, 1.0) * (gh * 0.5 - 5.0);
+            let px = |k: usize| gx + gw * k as f32 / (series.len() - 1) as f32;
+            for k in 1..series.len() {
+                let (a, b) = (series[k - 1], series[k]);
+                let col = if a + b >= 0.0 {
+                    Color::new(1.0, 0.35, 0.25, 0.95) // warm = high water
+                } else {
+                    Color::new(0.3, 0.55, 1.0, 0.95) // cold = low water
+                };
+                draw_line(px(k - 1), py(a), px(k), py(b), 1.6, col);
+            }
+            let cx = gx + gw * 0.5; // "now" sits mid-window
+            draw_line(cx, gy, cx, gy + gh, 1.0, Color::new(1.0, 1.0, 1.0, 0.55));
+            draw_circle(cx, py(now_h), 3.0, WHITE);
+            draw_text(
+                &format!(
+                    "tide at {}: now {:+.0} cm  (window ±{:.0} cm)",
+                    city.name,
+                    now_h * 100.0,
+                    half * 100.0
+                ),
+                gx,
+                gy + gh + 18.0,
+                15.0,
+                WHITE,
+            );
+        }
+
         let mode_txt = match sim.mode {
             TideMode::Cpu => "CPU (per-vertex)",
             TideMode::Gpu => "GPU (vertex shader)",
@@ -1179,9 +1282,10 @@ async fn main() {
                  [k] clouds sim/drift/off  [o] atmosphere  [m] moon  [f] tidal pull  [a] axis\n\
                  [i] Apophis impact  [u] 10-km impact  [v] gravity map  [r] reset camera  [H] hide this\n\
                  [t] temperature map  [w] wind streaks  [n] current streaks\n\
+                 [b] cities on/off  [tab] next city (tide graph top-right)\n\
                  drag = orbit  wheel = zoom",
                 16.0,
-                screen_height() - 94.0,
+                screen_height() - 112.0,
                 14.0,
                 None,
                 WHITE,

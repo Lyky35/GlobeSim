@@ -78,6 +78,8 @@ cargo test                            # unit tests: tide math, CPU mesh, clouds,
 | `t` | toggle the surface temperature map (air temp, blue cold → red warm) |
 | `w` | toggle wind streaks (animated tracers in the surface wind belts) |
 | `n` | toggle ocean-current streaks (animated tracers in the gyres) |
+| `tab` | cycle the selected city — its local tide graph sits top-right |
+| `b` | toggle city markers |
 | `a` | toggle rotation axis + equator |
 | `i` | Apophis-class impact (340 m, 1 176 Mt) under the camera |
 | `u` | Chicxulub-class impact (10 km, ~75 Gt) under the camera |
@@ -205,6 +207,14 @@ the ETOPO 2022 1-arc-minute bed topography (decimated to 0.5° and baked by
 still dwarfed by the radius, which is why the real Earth looks this smooth
 from orbit. The displacement is static, baked into the mesh once at startup.
 
+Ten coastal cities get markers ([tab] cycles, [b] toggles); the top-right graph
+re-samples the selected city's *equilibrium* tide live from the ephemerides —
+a closed-form function of time, so no history buffer is needed. Earth's spin
+sign is tied to the ephemeris handedness, which makes the synodic days
+emergent properties rather than constants: a 24.00 h solar day and a ~24 h 50 m
+lunar day (a unit test solves the real lunar day numerically from the Moon's
+azimuth drift and asserts it lands there).
+
 The ocean currents solve the steady wind-driven barotropic balance
 `ν∇²ψ + β·∂ψ/∂x = curl(wind stress)` — Gauss–Seidel on a land/sea mask
 classified straight from the ETOPO pixels — with β = 2Ωcosφ/R, the
@@ -267,7 +277,7 @@ Solar System Scope Moon & Milky Way (CC BY 4.0), EGM96 gravity coefficients
 - [ ] Shallow-water (Laplace tidal) equations on the sphere — co-tidal points, amphidromes
 - [x] Solar tide component (spring/neap cycles)
 - [x] Moon ephemeris (real orbital elements) and an actual Sun position for day/night
-- [ ] City markers + local tide-height graph
+- [x] City markers + local tide-height graph
 
 ## License
 
