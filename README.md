@@ -14,6 +14,22 @@ switchable live with one key. A browser prototype (three.js) lives in
 
 ![GlobeSim native render](docs/screenshot.png)
 
+## Download
+
+A prebuilt **Linux x86-64** build is attached to every
+[release](https://github.com/Lyky35/GlobeSim/releases/latest) — extract the
+tarball and run `./globesim` **from inside the extracted folder** (the binary
+loads its textures from the `assets/` folder beside it):
+
+```sh
+tar xzf globesim-v0.1.0-linux-x86_64.tar.gz
+cd globesim-v0.1.0-linux-x86_64 && ./globesim
+```
+
+Any GL 3.3-or-newer GPU will do (macroquad loads OpenGL at runtime), and it
+runs on both Wayland and X11. Windows/macOS builds come from source below —
+macroquad is cross-platform, I just ship what I can test.
+
 ## Build & run (Rust)
 
 ```sh
