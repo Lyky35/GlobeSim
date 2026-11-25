@@ -9,26 +9,35 @@ atmosphere.
 The main implementation is **Rust** ([macroquad](https://github.com/not-fl3/macroquad),
 OpenGL, no heavy engine) — a native desktop app where the tide surface can be
 computed on **either the GPU (vertex shader) or the CPU (per-vertex Rust)**,
-switchable live with one key. A browser prototype (three.js) lives in
-[`web/`](web/) and is [played online here](https://lyky35.github.io/GlobeSim/).
+switchable live with one key. The original three.js browser prototype (in
+[`web/`](web/)) is a frozen v0 — kept for reference, far behind the native app.
 
 ![GlobeSim native render](docs/screenshot.png)
 
 ## Download
 
-A prebuilt **Linux x86-64** build is attached to every
-[release](https://github.com/Lyky35/GlobeSim/releases/latest) — extract the
-tarball and run `./globesim` **from inside the extracted folder** (the binary
-loads its textures from the `assets/` folder beside it):
+Prebuilt binaries are attached to every
+[release](https://github.com/Lyky35/GlobeSim/releases/latest) — the game loads
+its textures from the `assets/` folder beside the executable, so run it from
+inside the extracted folder:
+
+**Linux x86-64**
 
 ```sh
 tar xzf globesim-v0.1.0-linux-x86_64.tar.gz
 cd globesim-v0.1.0-linux-x86_64 && ./globesim
 ```
 
-Any GL 3.3-or-newer GPU will do (macroquad loads OpenGL at runtime), and it
-runs on both Wayland and X11. Windows/macOS builds come from source below —
-macroquad is cross-platform, I just ship what I can test.
+**Windows x86-64** — unzip and run `globesim.exe` (double-click works too,
+the exe finds its `assets/` next to itself):
+
+```
+globesim-v0.1.0-windows-x86_64.zip  →  globesim.exe
+```
+
+Any GL 3.3-or-newer GPU will do (macroquad loads OpenGL at runtime); the Linux
+build runs on Wayland and X11. macOS comes from source below — macroquad is
+cross-platform, I just ship binaries for what I can run.
 
 ## Build & run (Rust)
 
@@ -223,17 +232,13 @@ into an impact winter. All heights remain exaggerated for visibility, in the
 same convention as the tide, and the anomaly colormap reports the exaggerated
 metres the scene actually draws.
 
-## Web prototype (`web/`)
+## Original browser prototype (`web/`)
 
-The original three.js version (no build step, vendored modules, same physics,
-live CPU/GPU switch with sliders) runs off any static server:
-
-```sh
-python3 -m http.server 8080   # then open http://localhost:8080/web/
-```
-
-It's live on GitHub Pages: <https://lyky35.github.io/GlobeSim/> (root page
-redirects to `web/`).
+The very first version, in three.js (no build step, vendored modules): kept
+purely as the project's starting point, **frozen and far behind the native
+app** — no impacts, no gravity map, no climate layer, and it is not maintained.
+The roadmap item that matters here is a WASM build of the Rust app to retire
+it properly.
 
 ## Texture credits
 
